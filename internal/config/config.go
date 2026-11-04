@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"path/filepath"
@@ -12,12 +13,29 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"wild-work/internal/backuplink"
+	"wild-work/internal/custom"
 )
 
 // Listen 监听地址：Host 为空表示全部接口。
 type Listen struct {
 	Host string `json:"host"`
 	Port int    `json:"port"`
+}
+
+// IsLoopback 是否是「仅本机可访问」的监听地址：环回 IP / localhost / 空主机名
+// （空主机名在 Go 里等同 :port，即全部网卡，但旧配置里 ":7863" 曾被当作本机语义，
+// 这里按「显式写环回才算安全」处理——空主机名一律视为对外暴露）。
+func (l Listen) IsLoopback() bool {
+	h := strings.TrimSpace(strings.ToLower(l.Host))
+	if h == "localhost" {
+		return true
+	}
+	if ip := net.ParseIP(strings.Trim(h, "[]")); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
 }
 
 // Addr 返回 net.Listen 使用的地址串，如 "127.0.0.1:7863" / ":7863"。
@@ -89,32 +107,233 @@ func ParseListen(s string) (Listen, error) {
 // Config 顶层配置。
 type Config struct {
 	Listen    Listen `json:"listen"`
-	APIKey    string `json:"api_key"`    // 空 = 不鉴权
-	AuthDir   string `json:"auth_dir"`   // ./auths
-	StateFile string `json:"state_file"` // ./data/state.json
-	Region    string `json:"region"`     // 只收 "cn"
+	APIKey    string `json:"api_key"`        // 空 = 不鉴权
+	AdminPass string `json:"admin_password"` // 空 = 管理面板不鉴权（仅允许监听环回地址时为空）
+	AuthDir   string `json:"auth_dir"`       // ./auths
+	StateFile string `json:"state_file"`     // ./data/state.json
+	Region    string `json:"region"`         // 只收 "cn"
 
 	Cooldown struct {
-		HardCredit  string `json:"hard_credit"`   // "12h"
+		HardCredit  string `json:"hard_credit"`   // "12h" 硬冷却上限
 		SoftRate    string `json:"soft_rate"`     // "60s"
 		ErrThresh   int    `json:"err_threshold"` // 默认 3
 		ErrCooldown string `json:"err_cooldown"`  // "10m"
+		// DailyGrantAt 每日额度发放时刻（UTC+8 墙钟 "HH:MM"）。非空时硬冷却
+		// （402/余额不足）**截到下一个发奖窗口**而不跑满 hard_credit：额度一到
+		// 账就能用，不让固定 12h 把刚补发的额度白锁几小时。
+		// 仅适用于「每日固定时刻发放」的渠道（qwenwork 00:00 UTC+8 实测 00:01~00:20
+		// 到账）；traework/raccoon 发奖时刻不固定，保持空串 = 不启用。
+		DailyGrantAt string `json:"daily_grant_at,omitempty"`
+		// DailyGrantBuffer 发奖窗口缓冲（默认 30m）。账本实测 qwenwork 到账
+		// 落在 00:01~00:20，取 30m 覆盖实测最晚值：既不在到账前空转撞 402，
+		// 也不把解冻拖到发奖之后。
+		DailyGrantBuffer string `json:"daily_grant_buffer,omitempty"`
 	} `json:"cooldown"`
 
 	Schedule struct {
 		CheckinHours   []int    `json:"checkin_hours,omitempty"` // 旧格式：[9,21]
 		CheckinTimes   []string `json:"checkin_times,omitempty"` // 新格式：["09:00","21:30"]
 		KeepaliveHours []int    `json:"keepalive_hours"`         // [22]
+		// ExpiringDays 面板「积分汇总」里「临期」的计算口径（自然日，1/2/7）。
+		//
+		// 历史：2026-10-20 的 R112 曾把该设置项**整体删除**（选号改按「最早到期时刻
+		// 升序」后，窗口大小不再是路由参数）；但删除同时也把「临期」展示固定成 1 天，
+		// 于是「明早 05:47 到期」这类每日包（还剩 20.8h）按自然日归「明日」⇒ 汇总条
+		// 一天里大部分时间恒不显示临期（2026-11-04 用户实测，见 R112b）。
+		//
+		// 现在恢复为**纯展示口径**的可选项，与运行统计三桶同源（provider.ExpiringWithinDays）：
+		//   1 = 今日到期（= 运行统计「今日到期」列）
+		//   2 = 今日+明日
+		//   7 = 7 日内到期（= 运行统计「7 日内到期」列）
+		// **仍然不参与选号**——选号判据只有一个：provider.EarliestExpire。
+		// 旧配置残留的 expiring_threshold_hours（小时粒度）已被本字段取代，静默忽略。
+		ExpiringDays int `json:"expiring_days,omitempty"`
 	} `json:"schedule"`
 
 	Upstream struct {
 		TimeoutSeconds int `json:"timeout_seconds"` // 默认 120
 	} `json:"upstream"`
 
+	// Server 入站 HTTP 服务参数。
+	Server struct {
+		// MaxRequestBodyMB 入站请求体上限（MiB）。0 = 默认 128。
+		// 为什么要给到这么高：无状态客户端（Codex）每轮把整段历史原样重放，
+		// 多张截图的 base64 会线性累积；gateway 转发前会把图缩到 1568px/JPEG，
+		// 所以这个上限只需容纳**客户端原始体**，不代表上游会收到这么大的包（issue #176）。
+		MaxRequestBodyMB int `json:"max_request_body_mb,omitempty"`
+
+		// StickyMaxRequests 同一渠道粘性账号连续成功使用多少次后轮换。
+		// 默认 50；非法值回退默认值，不阻断启动。
+		StickyMaxRequests int `json:"sticky_max_requests"`
+	} `json:"server"`
+
+	// Login 登录流程的可调项。
+	Login struct {
+		// LobsterAICallbackPort 固定 LobsterAI 的 OAuth 回调端口（0 = 每次随机）。
+		//
+		// 为什么需要它：有道 portal 的回调派发器**只认**
+		// `http://127.0.0.1:<port>/auth/callback`（hostname 严格等于 127.0.0.1，
+		// 否则丢弃该地址、改发 `lobsterai://` deep-link —— 见 docs/决议项.md R97）。
+		// 所以「浏览器与网关不同机」（局域网/远程访问面板）时要自动完成回调，
+		// 只能让浏览器侧也能连到那个环回端口：在那台机器上建端口转发
+		// （`ssh -L 127.0.0.1:<port>:127.0.0.1:<port> <网关>`）。
+		// 随机端口无法预建隧道，故允许写死一个端口。留空/0 保持随机（更省心，
+		// 但异地浏览器只能用面板的「粘贴回调地址」兜底）。
+		LobsterAICallbackPort int `json:"lobsterai_callback_port,omitempty"`
+
+		// ComateBrowserCDP 「用本机浏览器登录 WPS」的 CDP 调试地址，
+		// 形如 http://127.0.0.1:9222。留空 = 面板不显示该入口。
+		//
+		// 为什么需要配置而不能自动探测：调试端口是**用户自己**给浏览器开的
+		// （chrome --remote-debugging-port=9222），端口与是否开启都归用户决定；
+		// 自动扫描本机端口既不可靠也越权。配置好之后，用户在熟悉的浏览器里
+		// 登录一次，wild-work 直接读到 wps_sid，不必再复制粘贴 Cookie。
+		ComateBrowserCDP string `json:"comate_browser_cdp,omitempty"`
+	} `json:"login"`
+
+	// Compat 三接口兼容层（OpenAI Responses / Anthropic Messages）配置。
+	// 零值即关闭模型名映射，仅接受 "channel/model" 形式。
+	Compat struct {
+		// DefaultChannel 无前缀模型名的傅底渠道，如 "workbuddy"。
+		DefaultChannel string `json:"default_channel"`
+		// ModelMap 裸模型名 → "channel/model"。key 以 * 结尾时按前缀通配匹配。
+		ModelMap map[string]string `json:"model_map"`
+		// MaxTokensCap 转发上游前对 max_tokens 封顶（0 = 不限制）。
+		// Anthropic 客户端常发 64000，而多数上游上限更低，导致直接 400。
+		MaxTokensCap int `json:"max_tokens_cap"`
+	} `json:"compat"`
+
+	// BackupProxy 应用内**备用上游通道**（单一代理地址，http/https/socks5）。
+	// **不参与任何常规请求**：各渠道一律直连；仅当渠道自己判定「上游按地区拒绝」时，
+	// 才在同一次请求内经它重放一次（留空 = 无备用通道，失败原样透传）。决议 R57。
+	// 当前唯一取用方：cline（muse-spark 系国内直连被地区拒）。oczen 待上游恢复后再接。
+	// 本字段只负责持久化，生效态由 internal/backuplink 持有（零接线：渠道按需自取）。
+	BackupProxy string `json:"backup_proxy,omitempty"`
+
+	// LegacyProxies 是已废弃的「每渠道上游代理」（旧 `proxies` 段）。保留仅为**读取旧配置**
+	// 以便 normalize 一次性迁移进 BackupProxy；迁移后置 nil，下次保存即从文件消失。
+	// 不要再新增任何消费方：除 cline 外的渠道代理能力已整体删除。
+	LegacyProxies map[string]string `json:"proxies,omitempty"`
+
+	// LegacyProxyNote 旧 proxies 段的迁移结论（供 main 在日志接管后提示；不进 JSON）。
+	// 格式：「cline→socks5://…」+ 被丢弃的渠道列表。
+	LegacyProxyNote string `json:"-"`
+
+	// OczenAPIKey OpenCodeZen 渠道自定义 API key（sk-...）；空 = 匿名凭证（public）。
+	// 自定义 key 有独立配额（不受匿名通道共享限流），且可调用付费模型（需账户余额）。
+	OczenAPIKey string `json:"oczen_api_key,omitempty"`
+
+	// BodyLog 诊断开关：把每次请求的「上下文构成摘要」写入 data/ledger/body-trace-*.jsonl，
+	// 用于定位上下文为何膨胀（哪条消息/哪段文本占了大头）。默认关。
+	// 摘要含消息内容前 200 字预览，属临时排查工具，用完请关掉。
+	BodyLog bool `json:"body_log,omitempty"`
+
+	// ModelFallback 模型降级链：请求模型在该渠道全部账号上限流冷却（no_healthy_account
+	// 的「模型全冷」形态）时，按 To 顺序找第一个仍有可用账号的备胎模型顶上，
+	// 响应头 X-Model-Fallback 标注实际使用的备胎。仅全冷场景触发，正常路由零开销；
+	// 不粘滞——每个请求都按原模型重新判定，上游解冻即自动切回。
+	// From/To 均为 "channel/model" 全路径；面板可视化编辑，保存走 POST /api/config/model_fallback。
+	ModelFallback []ModelFallbackRule `json:"model_fallback,omitempty"`
+
+	// ReasoningEfforts 思考强度注入映射：客户端请求体**未带** reasoning_effort 键时，
+	// 按请求模型 ID（"channel/model" 全路径）注入配置档位；`*` 为全局默认（精确未命中时回退）。
+	// 键已存在（任意值含 null，客户端显式意图）一律不碰；未配置（空 map）= 零开销直通。
+	// 哑管道：不校验档位取值合法性，上游吃什么档位由渠道模型自己说了算。
+	// 面板可视化编辑，保存走 POST /api/config/reasoning_efforts。
+	ReasoningEfforts map[string]string `json:"reasoning_efforts,omitempty"`
+
+	// Features 功能开关（面板「设置」可切换，默认全部开启）。
+	Features struct {
+		// LoopGuard 思考链死循环检测（发癫拦截）：流式生成中检测推理复读/空转，
+		// 命中即中断 SSE 并返回错误，由下游 agent 自行重试。默认 true。
+		LoopGuard bool `json:"loop_guard"`
+	} `json:"features"`
+
+	// CustomChannels 自定义第三方 OpenAI 兼容渠道列表（R66）。
+	CustomChannels []custom.ChannelConfig `json:"custom_channels,omitempty"`
+
 	// 解析后
 	HardCreditDur  time.Duration `json:"-"`
 	SoftRateDur    time.Duration `json:"-"`
 	ErrCooldownDur time.Duration `json:"-"`
+	// DailyGrantAt 每日发奖窗口（UTC+8 墙钟时刻）。注意 00:00 解析后是 0，
+	// 与「未配置」不可区分，故是否启用看 DailyGrantEnabled。
+	DailyGrantAt time.Duration `json:"-"`
+	// DailyGrantEnabled 是否启用「硬冷却截到发奖窗口」策略（配置了 daily_grant_at 即启用）。
+	DailyGrantEnabled bool `json:"-"`
+	// DailyGrantBufferDur 发奖窗口缓冲（默认 30m）。
+	DailyGrantBufferDur time.Duration `json:"-"`
+}
+
+// ModelFallbackRule 单条模型降级规则：From（"channel/model" 全路径）在其渠道内
+// 全部账号上限流冷却时，按 To 顺序找第一个仍有可用账号的备胎模型顶上。
+// 约束：From 全局唯一；To 内不含 From（不自环）；To 至少一项。
+//
+// Name 是这条链的**可选别名**（R129）：别名是主力模型（From）的另一个名字，
+// 客户端请求别名等同于请求 From——同样的粘性路由、容量判定、降级链与冷却。
+// 别名只在**入口**解析，不参与备胎链（To 里不得写别名，From 也不得写别名）；
+// 空串 = 无别名（旧配置零迁移）。生命周期绑定规则：删规则别名一起消失，
+// 改 From 别名自动跟随（无需任何级联改写）。
+type ModelFallbackRule struct {
+	From string   `json:"from"`
+	To   []string `json:"to"`
+	Name string   `json:"name,omitempty"`
+}
+
+// AliasIndex 从降级链规则列表派生「别名 → 主力模型全路径」索引。
+//
+// **单一来源**：内层 handler（Chat）与兼容层（Responses/Anthropic）各自持有该 map 的
+// 副本，但派生只在这里发生一次，避免两边各写一套清洗逻辑而漂移（R129）。
+//
+// 跳过不合规的名字（保存时已硬拒，这里再兜底一次——手改 config.json 造出的脏数据
+// 不得导致崩溃或误路由）：空名、含 `/`、含空白/逗号/`*`、以及重复别名（先到先得）。
+func AliasIndex(rules []ModelFallbackRule) map[string]string {
+	out := map[string]string{}
+	for _, r := range rules {
+		name := strings.TrimSpace(r.Name)
+		if !ValidAliasName(name) {
+			continue
+		}
+		from := strings.TrimSpace(r.From)
+		if from == "" {
+			continue
+		}
+		if _, dup := out[name]; dup {
+			continue
+		}
+		out[name] = from
+	}
+	return out
+}
+
+// ValidAliasName 报告 name 是否是可用的别名（空串 = 无别名，也返回 false）。
+// 规则：不含 `/`（避免与 channel/model 前缀语义打架）、不含空白、逗号、`*`
+// （避免输入框里被切碎 / 与 model_map 通配语义混淆）。大小写敏感（R129）。
+func ValidAliasName(name string) bool {
+	if name == "" {
+		return false
+	}
+	if strings.ContainsAny(name, "/ \t\r\n,*\u3000\uff0c") {
+		return false
+	}
+	return true
+}
+
+// DefaultStickyMaxRequests 粘性路由的默认轮换阈值。
+const DefaultStickyMaxRequests = 50
+
+// 临期展示口径（自然日）：面板「积分汇总」的「临期」用几天窗口，
+// 与运行统计的「今日到期 / 明日到期 / 7 日内到期」同源（provider.ExpiringWithinDays）。
+// 只影响**展示**，不参与选号（选号判据只有 provider.EarliestExpire，见 R112/R112b）。
+const (
+	DefaultExpiringDays = 1 // 今日到期
+	ExpiringDaysTwoDays = 2 // 今日 + 明日
+	ExpiringDaysSeven   = 7 // 7 日内到期
+)
+
+// IsExpiringDays 报告 days 是否为面板允许的临期口径（1/2/7）。
+func IsExpiringDays(days int) bool {
+	return days == DefaultExpiringDays || days == ExpiringDaysTwoDays || days == ExpiringDaysSeven
 }
 
 // Default 默认配置。
@@ -130,10 +349,19 @@ func Default() *Config {
 	c.Cooldown.SoftRate = "60s"
 	c.Cooldown.ErrThresh = 3
 	c.Cooldown.ErrCooldown = "10m"
+	// 每日发奖窗口：qwenwork 每日 00:00（UTC+8）服务端自动发放，账本实测
+	// 00:01~00:20 到账。硬冷却据此截到「下个发奖窗口 + 缓冲」，不再跑满 12h。
+	c.Cooldown.DailyGrantAt = "00:00"
+	c.Cooldown.DailyGrantBuffer = "30m"
 	c.Schedule.CheckinHours = []int{9, 21}
 	c.Schedule.CheckinTimes = []string{"09:00", "21:00"}
 	c.Schedule.KeepaliveHours = []int{22}
+	c.Schedule.ExpiringDays = DefaultExpiringDays
 	c.Upstream.TimeoutSeconds = 120
+	c.Server.StickyMaxRequests = DefaultStickyMaxRequests
+	c.Compat.DefaultChannel = "workbuddy"
+	c.Compat.MaxTokensCap = 32000
+	c.Features.LoopGuard = true // 思考链死循环检测默认开启（面板可关）
 	return c
 }
 
@@ -206,6 +434,15 @@ func ParseClockTimes(values []string) ([]int, error) {
 	return out, nil
 }
 
+// parseClockHM 解析 "HH:MM" 为当天分钟偏移（0 ~ 1439）。
+func parseClockHM(v string) (time.Duration, error) {
+	mins, err := ParseClockTimes([]string{v})
+	if err != nil || len(mins) != 1 {
+		return 0, fmt.Errorf("invalid HH:MM %q", v)
+	}
+	return time.Duration(mins[0]) * time.Minute, nil
+}
+
 // FormatClockTimes 将当天分钟数格式化为排序后的 HH:MM 列表。
 func FormatClockTimes(minutes []int) []string {
 	out := make([]int, 0, len(minutes))
@@ -232,6 +469,9 @@ func applyEnv(c *Config) {
 	}
 	if v := os.Getenv("WILDWORK_API_KEY"); v != "" {
 		c.APIKey = v
+	}
+	if v := os.Getenv("WILDWORK_ADMIN_PASSWORD"); v != "" {
+		c.AdminPass = v
 	}
 	if v := os.Getenv("WILDWORK_AUTH_DIR"); v != "" {
 		c.AuthDir = v
@@ -261,6 +501,69 @@ func applyEnv(c *Config) {
 			c.Upstream.TimeoutSeconds = n
 		}
 	}
+	if v := os.Getenv("WILDWORK_DEFAULT_CHANNEL"); v != "" {
+		c.Compat.DefaultChannel = v
+	}
+	if v := os.Getenv("WILDWORK_MAX_TOKENS_CAP"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			c.Compat.MaxTokensCap = n
+		}
+	}
+	if v := os.Getenv("WILDWORK_LOOP_GUARD"); v != "" {
+		// 环境变量覆盖："0"/"false"/"no" 关闭，其余开启。
+		c.Features.LoopGuard = !(v == "0" || strings.EqualFold(v, "false") || strings.EqualFold(v, "no"))
+	}
+}
+
+// migrateLegacyProxies 把旧「每渠道代理」段（proxies）迁移成全局备用通道（决议 R57）。
+// 取值优先级：cline（当前唯一取用方）> 按渠道名排序后的第一个非空值；其余丢弃。
+// 迁移后把 LegacyProxies 置 nil，下一次 config.Save 就让旧段从文件里消失。
+// 返回迁移说明（无旧段时返回空串，不进日志）。
+func migrateLegacyProxies(c *Config) string {
+	if len(c.LegacyProxies) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(c.LegacyProxies))
+	for k, v := range c.LegacyProxies {
+		if strings.TrimSpace(v) == "" {
+			continue // 空值本来就是「直连」，不算被丢弃
+		}
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	picked := ""
+	if v := strings.TrimSpace(c.LegacyProxies["cline"]); v != "" {
+		picked = "cline"
+	} else if len(names) > 0 {
+		picked = names[0]
+	}
+	var dropped []string
+	for _, n := range names {
+		if n != picked {
+			dropped = append(dropped, n)
+		}
+	}
+	note := ""
+	if picked != "" {
+		raw := strings.TrimSpace(c.LegacyProxies[picked])
+		_, perr := backuplink.Parse(raw)
+		switch {
+		case strings.TrimSpace(c.BackupProxy) != "":
+			// 新字段已配 ⇒ 以 backup_proxy 为准，旧值只丢弃不迁移
+			note = fmt.Sprintf("已同时配置 backup_proxy 与旧 proxies[%s]，以 backup_proxy 为准", picked)
+		case perr != nil:
+			// 旧值本身不合法 ⇒ **不迁移**（否则多年前的脏值会把启动直接 fatal），只记日志
+			note = fmt.Sprintf("旧 proxies[%s]=%q 地址不合法，未迁移为备用上游通道", picked, raw)
+		default:
+			c.BackupProxy = raw
+			note = fmt.Sprintf("旧 proxies 段已迁移为备用上游通道（取自 %s=%s）", picked, raw)
+		}
+	}
+	if len(dropped) > 0 {
+		note += fmt.Sprintf("；%s 的旧代理已丢弃（该渠道不再支持代理，一律直连）", strings.Join(dropped, ","))
+	}
+	c.LegacyProxies = nil
+	return note
 }
 
 func (c *Config) normalize() error {
@@ -274,14 +577,72 @@ func (c *Config) normalize() error {
 	if c.ErrCooldownDur, err = time.ParseDuration(c.Cooldown.ErrCooldown); err != nil {
 		return fmt.Errorf("cooldown.err_cooldown: %w", err)
 	}
+	// 每日发奖窗口：空串 = 不启用（走完整 hard_credit）；非空必须是合法 "HH:MM"。
+	if c.Cooldown.DailyGrantAt != "" {
+		c.DailyGrantEnabled = true
+		if c.DailyGrantAt, err = parseClockHM(c.Cooldown.DailyGrantAt); err != nil {
+			return fmt.Errorf("cooldown.daily_grant_at: %w", err)
+		}
+		if c.Cooldown.DailyGrantBuffer == "" {
+			c.Cooldown.DailyGrantBuffer = "30m"
+		}
+		if c.DailyGrantBufferDur, err = time.ParseDuration(c.Cooldown.DailyGrantBuffer); err != nil {
+			return fmt.Errorf("cooldown.daily_grant_buffer: %w", err)
+		}
+	}
 	if c.Cooldown.ErrThresh <= 0 {
 		c.Cooldown.ErrThresh = 3
 	}
 	if c.Upstream.TimeoutSeconds <= 0 {
 		c.Upstream.TimeoutSeconds = 120
 	}
+	// 临期展示口径：只接受 1/2/7（面板下拉框限定）。非法值（含老配置缺字段的 0）
+	// 回退默认 1 天并记 WARN——只在内存回退，**加载时不写盘**（不变量 5：老配置
+	// 缺字段用默认值即可，不因读一次配置就改写文件，否则配置漂移会让用户看不出
+	// 哪些是默认值；与 sticky_max_requests 同一纪律）。
+	if !IsExpiringDays(c.Schedule.ExpiringDays) {
+		if c.Schedule.ExpiringDays != 0 {
+			log.Printf("WARN config: schedule.expiring_days=%d invalid, fallback=%d",
+				c.Schedule.ExpiringDays, DefaultExpiringDays)
+		}
+		c.Schedule.ExpiringDays = DefaultExpiringDays
+	}
+	if c.Compat.MaxTokensCap < 0 {
+		c.Compat.MaxTokensCap = 0 // 负数视为「不限制」，避免误用导致 max_tokens 被置 0
+	}
+	// 入站请求体上限：0 = 默认；负数/过大一律钳到合理区间（下限 8MiB 沿用历史最低值，
+	// 上限 1024MiB 防手滑写成天文数字把内存撑爆）。
+	if c.Server.MaxRequestBodyMB < 0 {
+		c.Server.MaxRequestBodyMB = 0
+	}
+	if c.Server.MaxRequestBodyMB > 0 && c.Server.MaxRequestBodyMB < 8 {
+		c.Server.MaxRequestBodyMB = 8
+	}
+	if c.Server.MaxRequestBodyMB > 1024 {
+		c.Server.MaxRequestBodyMB = 1024
+	}
+	if c.Server.StickyMaxRequests <= 0 {
+		log.Printf("WARN config: server.sticky_max_requests=%d invalid, fallback=%d",
+			c.Server.StickyMaxRequests, DefaultStickyMaxRequests)
+		c.Server.StickyMaxRequests = DefaultStickyMaxRequests
+	}
 	if c.Listen.Port <= 0 {
 		c.Listen.Port = 7863
+	}
+	c.AdminPass = strings.TrimSpace(c.AdminPass)
+	// 备用上游通道：先把旧 `proxies` 段一次性迁移（决议 R57），再校验现值。
+	// 迁移取值优先级：cline（当前唯一取用方）> 按渠道名排序后的第一个非空值；
+	// 其余地址一律丢弃并记入提示 —— 渠道侧代理逻辑已删除，留着只会造成「配了就生效」的错觉。
+	if note := migrateLegacyProxies(c); note != "" {
+		c.LegacyProxyNote = note
+	}
+	if raw := strings.TrimSpace(c.BackupProxy); raw != "" {
+		if _, err := backuplink.Parse(raw); err != nil { // 判据与面板保存同源（避免两处漂移）
+			return err
+		}
+		c.BackupProxy = raw
+	} else {
+		c.BackupProxy = ""
 	}
 	if c.Region == "" {
 		c.Region = "cn"
@@ -312,5 +673,53 @@ func (c *Config) normalize() error {
 			}
 		}
 	}
+	seenCustom := map[string]bool{}
+	for i := range c.CustomChannels {
+		ch := &c.CustomChannels[i]
+		if err := ch.Validate(); err != nil {
+			return fmt.Errorf("custom_channels[%d]: %w", i, err)
+		}
+		if seenCustom[ch.Name] {
+			return fmt.Errorf("custom_channels[%d]: duplicate channel name %q", i, ch.Name)
+		}
+		seenCustom[ch.Name] = true
+	}
 	return nil
+}
+
+// hardCooldownLoc 每日发奖窗口的时区口径：固定 UTC+8 墙钟（与各渠道上游一致）。
+var hardCooldownLoc = time.FixedZone("UTC+8", 8*60*60)
+
+// HardCooldownFor 返回一次「硬冷却」（402 余额/权益不足）应持续多久。
+//
+// 为什么不是固定 HardCreditDur：qwenwork 等渠道每日 00:00（UTC+8）服务端自动
+// 发放额度（账本实测 00:01~00:20 到账）。固定 12h 会把「19:07 撞 402」锁到次日
+// 07:07——额度早在 00:20 就到账了，却被白锁 7 小时。故当 DailyGrantAt 已配置时，
+// 冷却截到「下一个发奖窗口 + 缓冲」，让解冻点落在额度到账之后、且不早于到账
+// （避免解冻后立刻再撞 402）。窗口配置为空时退回完整 HardCreditDur（老行为）。
+//
+// 上限保护：截断只会缩短、不会延长——超过 HardCreditDur 时仍按 HardCreditDur。
+func (c *Config) HardCooldownFor(now time.Time) time.Duration {
+	base := c.HardCreditDur
+	if !c.DailyGrantEnabled {
+		return base
+	}
+	until := NextDailyGrant(now, c.DailyGrantAt, c.DailyGrantBufferDur)
+	d := until.Sub(now)
+	if d <= 0 || d > base {
+		return base
+	}
+	return d
+}
+
+// NextDailyGrant 返回 now 之后（严格晚于）最近一个「发奖时刻 + 缓冲」。
+// 已过当日窗口则顺延到次日；时刻按 UTC+8 墙钟解释，与上游发奖口径一致。
+func NextDailyGrant(now time.Time, at, buffer time.Duration) time.Time {
+	local := now.In(hardCooldownLoc)
+	day := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, hardCooldownLoc)
+	next := day.Add(at + buffer)
+	if !next.After(now) {
+		next = next.AddDate(0, 0, 1)
+	}
+	return next
 }

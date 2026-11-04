@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"wild-work/internal/auth"
+	"wild-work/internal/idle"
 	"wild-work/internal/provider"
 )
 
@@ -24,16 +25,19 @@ type Client struct {
 	HTTP    *http.Client
 	Base    string // 业务 API，默认 https://openapi.qoder.com.cn
 	Gateway string // 推理网关，默认 https://gateway.qoder.com.cn
+	// StreamHTTP 用于对话流（SSE）：不设整体 Timeout，避免长回答在超时点被掐断
+	// 且无终止帧（R35 / issue #42）。
+	StreamHTTP *http.Client
+	// IdleTimeout 聊天 SSE 流中空闲超时（StreamHTTP 无总时长上限，靠本字段兜底
+	// 「上游中途卡死」）。<=0 表示禁用（测试用）。
+	IdleTimeout time.Duration
 
 	// modelMap 客户端名（display_name 规范化）→ 上游 model key。
-	// 由 FetchModels 填充；ChatStream 优先查此表，查不到再查静态表。
+	// entries 上游 model key → 模型条目（供 ChatStream 取 format/source 等上游真值）。
+	// 均由 FetchModels 填充；ChatStream 优先查此表，查不到再查静态表。
 	modelMu  sync.RWMutex
 	modelMap map[string]string
-
-	// lastModel 最近一次 chat 请求的客户端模型名（含 qoder/ 前缀），
-	// 供 Aggregate/Stream 覆盖响应中的 model 字段（上游恒为 auto）。
-	lastModelMu sync.RWMutex
-	lastModel   string
+	entries  map[string]DynamicModel
 }
 
 // New 生产默认。Qoder gateway 对 HTTP/2 不友好（stream INTERNAL_ERROR），强制 HTTP/1.1。
@@ -50,39 +54,32 @@ func NewWithTimeout(timeout time.Duration) *Client {
 		TLSNextProto:        map[string]func(string, *tls.Conn) http.RoundTripper{}, // 强制 HTTP/1.1
 	}
 	return &Client{
-		HTTP:    &http.Client{Timeout: timeout, Transport: tr},
-		Base:    OpenAPIBase,
-		Gateway: GatewayBase,
+		HTTP:        &http.Client{Timeout: timeout, Transport: tr},
+		StreamHTTP:  &http.Client{Transport: tr}, // 共用 Transport，不设 Timeout
+		IdleTimeout: idle.DefaultTimeout,         // 流中空闲监控兜底（见 internal/idle）
+		Base:        OpenAPIBase,
+		Gateway:     GatewayBase,
 	}
 }
 
-// NewWithBase 测试用：覆盖 base/gateway。
-func NewWithBase(base, gateway string) *Client {
-	c := New()
-	c.Base = base
-	c.Gateway = gateway
-	return c
-}
-
-// setModelMap 记录动态模型映射（客户端名 → key）。
-func (c *Client) setModelMap(m map[string]string) {
+// setModelEntries 记录 上游 key → 模型条目 表（与 setModelMap 同批写入）。
+// setModelEntries 同批写入 上游 key→条目表 与 客户端名→key 映射（一把锁，防中间态）。
+func (c *Client) setModelEntries(entries map[string]DynamicModel, nameToKey map[string]string) {
 	c.modelMu.Lock()
-	c.modelMap = m
+	c.entries = entries
+	c.modelMap = nameToKey
 	c.modelMu.Unlock()
 }
 
-// setLastModel 记录最近一次 chat 的客户端模型名。
-func (c *Client) setLastModel(m string) {
-	c.lastModelMu.Lock()
-	c.lastModel = m
-	c.lastModelMu.Unlock()
-}
-
-// lastClientModel 读取最近一次 chat 的客户端模型名（含前缀）。
-func (c *Client) lastClientModel() string {
-	c.lastModelMu.RLock()
-	defer c.lastModelMu.RUnlock()
-	return c.lastModel
+// modelEntry 上游 model key → 模型条目；未命中（如走静态表兜底）返回 nil。
+func (c *Client) modelEntry(key string) *DynamicModel {
+	c.modelMu.RLock()
+	defer c.modelMu.RUnlock()
+	e, ok := c.entries[key]
+	if !ok {
+		return nil
+	}
+	return &e
 }
 
 // modelKey 客户端模型名 → 上游 model key：动态映射优先，静态表兜底。
@@ -107,18 +104,6 @@ func billingHeaders(req *http.Request, dt string) {
 
 func (c *Client) get(path, dt string) (*http.Response, error) {
 	req, err := http.NewRequest(http.MethodGet, c.base()+path, nil)
-	if err != nil {
-		return nil, err
-	}
-	billingHeaders(req, dt)
-	return c.HTTP.Do(req)
-}
-
-func (c *Client) post(path, dt string, body []byte) (*http.Response, error) {
-	if body == nil {
-		body = []byte("{}")
-	}
-	req, err := http.NewRequest(http.MethodPost, c.base()+path, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -208,6 +193,14 @@ func (c *Client) RefreshToken(a *auth.Auth) error {
 	return nil
 }
 
+// streamHTTP 返回对话流专用 client（无整体 Timeout）；未配置时回退到 HTTP。
+func (c *Client) streamHTTP() *http.Client {
+	if c.StreamHTTP != nil {
+		return c.StreamHTTP
+	}
+	return c.HTTP
+}
+
 // ChatStream 发 chat 请求并返回原始嵌套 SSE body 流（调用方负责 Close）。
 // 非 2xx 时 rc 为 nil、respBody 为上游响应体、err 为 nil；只有传输层失败才返回 err。
 func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status int, respBody []byte, err error) {
@@ -224,11 +217,11 @@ func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status
 	if err := json.Unmarshal(body, &reqOpenAI); err != nil {
 		return nil, 0, nil, fmt.Errorf("parse chat body: %w", err)
 	}
-	c.setLastModel(reqOpenAI.Model)
 	modelKey := c.modelKey(reqOpenAI.Model)
 	if modelKey == "" {
 		modelKey = reqOpenAI.Model
 	}
+	entry := c.modelEntry(modelKey) // 上游真值 format/source；未命中为 nil
 
 	// 思考开关：reasoning_effort 或 thinking:{type:"enabled"} → 启用推理
 	enableReasoning := false
@@ -240,7 +233,10 @@ func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status
 		enableReasoning = true
 	}
 
-	rawBody, err := buildAgentBody(reqOpenAI.Messages, modelKey, reqOpenAI.Tools, enableReasoning, reasoningEffort)
+	// 上下文档位（issue #27）：客户端 context_length/context_window 提示 → 模型默认档
+	contextWindow := resolveContextWindow(parseContextWindowHint(body), entry)
+
+	rawBody, err := buildAgentBody(reqOpenAI.Messages, modelKey, entry, reqOpenAI.Tools, enableReasoning, reasoningEffort, contextWindow)
 	if err != nil {
 		return nil, 0, nil, fmt.Errorf("build qoder body: %w", err)
 	}
@@ -258,19 +254,23 @@ func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status
 	if err := sess.ApplyHeaders(req, encoded, url, a.UID, true, modelKey); err != nil {
 		return nil, 0, nil, fmt.Errorf("cosy headers: %w", err)
 	}
-	resp, err := c.HTTP.Do(req)
+	req, cancel := idle.WithCancel(req)
+	resp, err := c.streamHTTP().Do(req)
 	if err != nil {
+		cancel()
 		log.Printf("qoder chat_stream uid=%s model=%s: transport error: %v", a.UID, modelKey, err)
 		return nil, 0, nil, err
 	}
 	if resp.StatusCode >= 400 {
+		cancel()
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		resp.Body.Close()
 		log.Printf("qoder chat_stream uid=%s model=%s: upstream %d body=%s",
 			a.UID, modelKey, resp.StatusCode, truncate(string(raw), 200))
 		return nil, resp.StatusCode, raw, nil
 	}
-	return resp.Body, resp.StatusCode, nil, nil
+	// 成功分支：cancel 所有权交给 idle.Monitor（其 Close 会 cancel；静默超时也会 cancel）。
+	return idle.Monitor(resp.Body, c.IdleTimeout, cancel), resp.StatusCode, nil, nil
 }
 
 // UserResource 查询账号当前可花费积分（基础 + 赠送聚合）。
@@ -339,10 +339,10 @@ func (c *Client) UserResourceDetail(a *auth.Auth) (int64, []provider.ResourceIte
 	}
 	total := int64(q.UserQuota.Remaining + q.AddOnQuota.Remaining)
 	items := []provider.ResourceItem{
-		{Name: "用户套餐", Total: int64(q.UserQuota.Total), Used: int64(q.UserQuota.Used), Remain: int64(q.UserQuota.Remaining)},
+		{Name: "用户套餐", Total: int64(q.UserQuota.Total), Used: int64(q.UserQuota.Used), Remain: int64(q.UserQuota.Remaining), Key: "userQuota", Usable: true},
 	}
 	if q.AddOnQuota.Total > 0 || q.AddOnQuota.Remaining > 0 {
-		items = append(items, provider.ResourceItem{Name: "赠送额度", Total: int64(q.AddOnQuota.Total), Used: int64(q.AddOnQuota.Used), Remain: int64(q.AddOnQuota.Remaining)})
+		items = append(items, provider.ResourceItem{Name: "赠送额度", Total: int64(q.AddOnQuota.Total), Used: int64(q.AddOnQuota.Used), Remain: int64(q.AddOnQuota.Remaining), Key: "addOnQuota", Usable: true})
 	}
 	return total, items, nil
 }
@@ -356,13 +356,14 @@ func (c *Client) DailyCheckin(a *auth.Auth) error {
 func (c *Client) Classify(status int, body string) provider.ErrKind { return Classify(status, body) }
 
 // Stream 实现 provider.Upstream（嵌套 SSE → 标准 OpenAI SSE 透传）。
-func (c *Client) Stream(w http.ResponseWriter, r io.Reader) error {
-	return Stream(w, r, c.lastClientModel())
+// model 为客户端请求的模型名，直接注入每个 chunk（上游恒为 "auto"）。
+func (c *Client) Stream(w http.ResponseWriter, r io.Reader, model string) (map[string]any, error) {
+	return StreamCapture(w, r, model, nil)
 }
 
 // Aggregate 实现 provider.Upstream（嵌套 SSE 聚合）。
-func (c *Client) Aggregate(r io.Reader) (map[string]any, error) {
-	return aggregate(r, c.lastClientModel())
+func (c *Client) Aggregate(r io.Reader, model string) (map[string]any, error) {
+	return aggregate(r, model)
 }
 
 // ---------------------------------------------------------------------------
@@ -382,19 +383,48 @@ func Classify(status int, body string) provider.ErrKind {
 		return provider.ErrHardCredit
 	}
 	lower := strings.ToLower(body)
+	// TOKEN_EXPIRE 优先于通用 401
+	if status == http.StatusUnauthorized && strings.Contains(body, "TOKEN_EXPIRE") {
+		return provider.ErrSessionDead
+	}
+	if status == http.StatusUnauthorized {
+		return provider.ErrSessionDead
+	}
+	// 排队提示（10605 isQueued）：就算外层是 4xx，语义也是「等一会儿再来」，
+	// 换号可能命中不同队列 ⇒ 独立类别，冷却「号×模型」而不是罚整号。
+	if strings.Contains(body, "10605") || strings.Contains(body, "isQueued") {
+		return provider.ErrQueued
+	}
+	// 429 优先于 hardRule：限流 body 高频带 "quota exceeded"。
+	if status == http.StatusTooManyRequests {
+		return provider.ErrSoftRate
+	}
+	// 账号额度耗尽（qodercom 实测 110「Billing daily count exceeded」/ 112 付费墙）：
+	// 文案不含 hardMarkers 的 "quota exceeded"，必须显式列码，否则会被归成普通
+	// ErrClient 只换号不冷却，下次请求又撞同一堵墙。
+	if strings.Contains(body, `"code":"110"`) || strings.Contains(body, `"code":"112"`) ||
+		strings.Contains(body, `\"code\":\"110\"`) || strings.Contains(body, `\"code\":\"112\"`) ||
+		strings.Contains(body, "pricingUrl") || strings.Contains(body, `"isQuotaExceeded":true`) {
+		return provider.ErrHardCredit
+	}
+	// 上游以 HTTP 200 包裹的排队/限流拒绝：内嵌 403 + subCode:RESOURCE_LIMIT
+	// （业务码 10605，带 retryAfterSeconds/waitTime/serviceAvailable:false）。
+	// 必须排在「403 且 body 为空 → ErrWafBlock」与 4xx 兜底之前，否则落 ErrClient
+	// ——既不罚账号也不进流错误分类（R108）。
+	// 10605 走 provider.CodeMarker 而非裸 Contains：错误文本里的 trace_id/requestId
+	// 常含五位数字，裸匹配会把无关失败误判成限流（与 11115 同一教训）。
+	if strings.Contains(body, "RESOURCE_LIMIT") ||
+		(strings.Contains(body, "serviceAvailable") && provider.CodeMarker(lower, "10605")) {
+		return provider.ErrSoftRate
+	}
 	for _, m := range hardMarkers {
 		if strings.Contains(lower, strings.ToLower(m)) || strings.Contains(body, m) {
 			return provider.ErrHardCredit
 		}
 	}
-	// TOKEN_EXPIRE 优先于通用 401
-	if status == http.StatusUnauthorized && strings.Contains(body, "TOKEN_EXPIRE") {
-		return provider.ErrSessionDead // 无有效 dt → 需重新登录（dt 刷新由 RefreshToken 处理）
-	}
-	if status == http.StatusUnauthorized {
-		return provider.ErrSessionDead
-	}
-	if status == http.StatusTooManyRequests {
+	// 非 429 但 body 含限流文案 → 软限流
+	if strings.Contains(lower, "rate limit") || strings.Contains(lower, "too many requests") ||
+		strings.Contains(lower, "usage limit") || strings.Contains(lower, "请求过于频繁") {
 		return provider.ErrSoftRate
 	}
 	if status == http.StatusNotFound {
@@ -404,6 +434,21 @@ func Classify(status int, body string) provider.ErrKind {
 		return provider.ErrServer
 	}
 	if status >= 400 {
+		if strings.Contains(lower, "blocked by security policy") ||
+			strings.Contains(lower, "unapproved channel") ||
+			strings.Contains(lower, "illegal api invocation") {
+			return provider.ErrContentBlocked
+		}
+		if (status == 400 || status == 404) &&
+			(strings.Contains(lower, "prompt is too long") || strings.Contains(lower, "11115")) {
+			return provider.ErrPromptTooLong
+		}
+		if status == 403 && strings.TrimSpace(body) == "" {
+			return provider.ErrWafBlock
+		}
+		if strings.Contains(lower, "request illegal") || strings.Contains(lower, "trial not activated") {
+			return provider.ErrAccountFault
+		}
 		return provider.ErrClient
 	}
 	return provider.ErrNone
