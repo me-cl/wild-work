@@ -286,6 +286,9 @@ GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o dist/wild-work-linux ./cmd/wil
 
 Windows 图标嵌入：`rsrc -ico cmd/wild-work/icon.ico -o cmd/wild-work/rsrc_windows_amd64.syso`
 
+> 完整打包链（macOS `.app`/`.dmg`、Android AAR+APK、版本号必改位置、CI 矩阵与 tag 发版流程）
+> 见 [`docs/打包发版备忘.md`](docs/打包发版备忘.md)。
+
 ## 6. 数据流
 
 ```

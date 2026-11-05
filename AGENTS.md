@@ -492,6 +492,7 @@ bash scripts/probe-dump.sh summarize                # 汇总各渠道 usage 字�
 | [AGENTS.md](AGENTS.md) | **本文件**：纪律 + 决议索引 + 关键不变量 + 构建发版 |
 | [docs/决议项.md](docs/决议项.md) | **R1–R155 决议全文**（证据链、反例、已知限制） |
 | [docs/渠道接入备忘.md](docs/渠道接入备忘.md) | 各渠道协议要点、凭据模型、已知限制与踩坑 |
+| [docs/打包发版备忘.md](docs/打包发版备忘.md) | **打包发版的唯一操作手册**：五平台产物来源、版本号真源与必改位置、Windows/macOS/Android 构建命令与坑、文档入库规则、CI 矩阵与 tag 发版流程 |
 | [docs/接口参考.md](docs/接口参考.md) | 面板区块规划 + 管理 API 全量清单 |
 | [docs/模型降级链定义.md](docs/模型降级链定义.md) | **模型降级链的唯一权威定义**：三维归因、错误类型全量归属、两条触发路径、三条硬规则、已知限制（R94） |
 | [docs/三接口兼容改造备忘.md](docs/三接口兼容改造备忘.md) | 三接口（Chat/Responses/Anthropic）兼容层架构决策与验证清单 |
