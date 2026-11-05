@@ -29,10 +29,13 @@ type Listen struct {
 	//
 	// 必须有这个标记：Port 的零值既可能是「配置里没写端口」（应回落 DefaultPort），
 	// 也可能是「显式要求随机端口」（如 `WILDWORK_LISTEN=127.0.0.1:0`）。只看 Port
-	// 无法区分，早先的实现直接把 0 当非法值，导致 Android 外壳写的 `:0`
-	// 在 applyEnv 里被静默丢弃、实际落到固定端口（2026-11-05 发现）。
+	// 无法区分，早先的实现直接把 0 当非法值，导致 `:0` 在 applyEnv 里被静默丢弃。
 	//
-	// json:"-" ⇒ 配置文件里不写这个字段；`"port": 0` 仍按旧语义回落默认端口。
+	// 注意：**Android 壳不用它**（2026-11-05 改回固定端口，见 mobile/mobile.go）。
+	// 保留该能力只为 `WILDWORK_LISTEN=<host>:0` 这类显式请求，且配置文件里的
+	// `"port": 0` 仍按旧语义回落默认端口（见 UnmarshalJSON）。
+	//
+	// json:"-" ⇒ 配置文件里不写这个字段。
 	Ephemeral bool `json:"-"`
 }
 
@@ -114,10 +117,9 @@ func ParseListen(s string) (Listen, error) {
 	port := 0
 	if portStr != "" {
 		n, err := strconv.Atoi(portStr)
-		// 端口 0 是**合法**写法：交给内核分配空闲端口（Android 壳固定用它，
-		// `WILDWORK_LISTEN=127.0.0.1:0`）。此前把它判成非法，而 applyEnv 会静默
-		// 吞掉解析错误 ⇒ 外壳写的 127.0.0.1:0 从未生效，实际落到 config.json 里
-		// 的固定端口（2026-11-05 发现）。
+		// 端口 0 是**合法**写法：交给内核分配空闲端口（`WILDWORK_LISTEN=127.0.0.1:0`
+		// 这种显式请求；Android 壳本身已改回固定端口，见 mobile/mobile.go）。
+		// 此前把它判成非法，而 applyEnv 会静默吞掉解析错误 ⇒ 环境变量整条失效。
 		if err != nil || n < 0 || n > 65535 {
 			return Listen{}, fmt.Errorf("bad listen port %q", portStr)
 		}
@@ -430,10 +432,10 @@ func Load(path string) (*Config, error) {
 // LoadOrCreate 在配置不存在时用默认值建一份并落盘，返回配置与是否新建。
 //
 // 为什么需要它、而不是让调用方自己 `Default()`：**全新安装也必须吃 WILDWORK_*
-// 环境变量**。Android 外壳用 `WILDWORK_LISTEN=127.0.0.1:0` 要求内核分配端口，
-// 首次启动时 config.json 还不存在；若这里直接 `config.Default()`，env 覆盖被整条
-// 跳过，实际监听会落到 config.json 里写下的固定端口——外壳拿到的端口与真实
-// 端口不一致（2026-11-05 实测发现：日志打 127.0.0.1:17863，而期望是随机端口）。
+// 环境变量**（`WILDWORK_LISTEN` 指定监听、`WILDWORK_AUTH_DIR` 换凭据目录、
+// `WILDWORK_STATE_FILE` 换状态文件等，见 applyEnv）。首次启动时 config.json 还
+// 不存在，若这里直接 `config.Default()`，env 覆盖被整条跳过，实际监听/数据目录
+// 会与调用方声明的不一致（2026-11-05 在 Android 壳的随机端口需求上首次暴露）。
 //
 // 语义与 Load 严格一致：文件**存在**时行为完全相同（含「加载不写盘」这项不变量）；
 // 只有「不存在」这一支多一次 Save（把默认配置落盘），并返回 created=true。

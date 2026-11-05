@@ -217,9 +217,9 @@ class MainActivity : AppCompatActivity() {
     /**
      * 是否属于面板自身（本机 Go 服务）。
      *
-     * 判据取 `panelUrl` 的 scheme+host:port，而不是写死 127.0.0.1 —— 端口由内核分配
-     * （WILDWORK_LISTEN=127.0.0.1:0），写死端口会让整条「留在 WebView 里」的判定失效，
-     * 面板里每一次跳转都会被丢去系统浏览器。
+     * 判据取 `panelUrl` 的 scheme+host:port，而不是写死字面量 —— 端口固定在
+     * config.json（默认 17863），但用户可以在面板「设置 → 监听」里改，写死会让
+     * 「留在 WebView 里」的判定失效，面板里每一次跳转都被丢去系统浏览器。
      */
     private fun isPanelUrl(uri: Uri): Boolean {
         if (panelUrl.isEmpty()) return false

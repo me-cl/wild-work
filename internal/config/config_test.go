@@ -79,9 +79,9 @@ func TestDefaultPortAppliesOnlyWhenUnset(t *testing.T) {
 
 // 端口 0 是合法写法（内核分配），**不能**被当非法值静默丢弃。
 //
-// 现场：Android 外壳在 mobile.startLocked 里设 WILDWORK_LISTEN=127.0.0.1:0，
-// 而 ParseListen 原先把 "0" 判成 bad listen port；applyEnv 又只 `if err == nil`
-// 才赋值 ⇒ 环境变量整条被吞，实际落到 config.json 的固定端口。
+// 现场：`WILDWORK_LISTEN=127.0.0.1:0` 曾整条失效——ParseListen 把 "0" 判成
+// bad listen port，而 applyEnv 又只 `if err == nil` 才赋值 ⇒ 环境变量被吞。
+// （Android 壳当前已改回固定端口，这条守的是显式 :0 这条能力本身。）
 func TestParseListenAcceptsEphemeralPort(t *testing.T) {
 	for _, in := range []string{"127.0.0.1:0", ":0", "0"} {
 		l, err := ParseListen(in)

@@ -18,7 +18,6 @@ package mobile
 import (
 	"fmt"
 	"log"
-	"os"
 	"sync"
 	"time"
 
@@ -32,7 +31,8 @@ var (
 )
 
 // Start 在 home 目录（通常是 Context.getFilesDir()）下启动服务，返回可访问的
-// 面板 URL（形如 http://127.0.0.1:17863/；Android 上由内核分配，见 startLocked）。
+// 面板 URL（形如 http://127.0.0.1:17863/）。端口是**固定**的：首次安装取
+// config.DefaultPort，之后跟随 config.json 里用户改过的值，重启不变（见 startLocked）。
 //
 // 返回空串 = 启动失败，具体原因可从 Err() 取（沿 LastError 语义）。
 // 为什么不用 (string, error)：gomobile 的绑定生成器不支持 error 接口，
@@ -58,13 +58,18 @@ func Start(home string) (url string) {
 }
 
 func startLocked(home string) (*daemon.Daemon, error) {
-	// 监听地址强制压到环回：Android 上没有「让局域网访问」的合理场景，
-	// 而对外监听会要求 admin_password（见 daemon.Start 的门槛）。
-	// 端口交给内核分配（:0）——手机上没有「固定端口」的需求，反而更不容易撞端口；
-	// 外壳拿 Start 返回的 URL 即可。
-	if os.Getenv("WILDWORK_LISTEN") == "" {
-		_ = os.Setenv("WILDWORK_LISTEN", "127.0.0.1:0")
-	}
+	// 监听地址完全交给 config.json：全新安装是 127.0.0.1 + config.DefaultPort
+	// （17863），用户在面板「设置 → 监听」里改过就沿用改后的值。
+	//
+	// **不要**在这里设置 WILDWORK_LISTEN（任何值，包括改成固定的 17863）：
+	// applyEnv 的优先级高于配置文件（见 config.applyEnv），写死就等于把用户
+	// 在面板里改的监听地址永久压掉——设置项看着还在，重启后却悄悄失效。
+	//
+	// 也不要再要求内核随机分配（`:0`）：早期实现设过
+	// WILDWORK_LISTEN=127.0.0.1:0，结果是**每次重启面板端口都变**，adb forward
+	// 与「把面板地址记进手机上的客户端」都做不了；WebView 本来就从 Mobile.url()
+	// 取地址，随机端口换不来任何好处。
+	// 端口被占用时 daemon.Start 会返回错误（R68），不会自选下一个端口。
 	return daemon.Start(daemon.Options{
 		Home:       home,
 		ConfigPath: "config.json",

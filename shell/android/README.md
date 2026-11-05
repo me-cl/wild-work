@@ -68,14 +68,22 @@ keytool -genkeypair -v -keystore ww.jks -keyalg RSA -keysize 2048 -validity 1000
 
 - 首次启动：`POST_NOTIFICATIONS` 授权（Android 13+）→ 起前台服务 → 服务在
   `Context.filesDir` 下建 `config.json`/`auths/`/`data/` → 面板自动加载。
-- 端口：`WILDWORK_LISTEN=127.0.0.1:0`，由内核分配空闲端口（手机上没有固定端口
-  约定，也不该占用固定端口）；实际地址从 `Mobile.url()` 取。
-  这条链路有三个必须保持的点（2026-11-05 逐个修过）：
-  ① `config.ParseListen` 必须接受端口 `0`（此前判成非法，`applyEnv` 又静默吞错
-  ⇒ 环境变量整条失效）；② 全新安装（没有 `config.json`）也走 `config.LoadOrCreate`，
-  **不能**直接 `config.Default()`，否则跳过 `applyEnv`，首次启动照样丢端口；
-  ③ `Listen.Addr()` / `normalize()` 用 `Listen.Ephemeral` 区分「显式 :0」与「没写端口」，
-  只有后者才回落默认端口。
+- 端口：**固定**，壳不传任何监听环境变量，由 `config.json` 决定——
+  全新安装是 `config.DefaultPort`（**17863**），用户在面板「设置 → 监听」里改过就
+  沿用改后的值。重启不变，`adb forward`、把面板地址记进手机上的客户端才成立。
+  （2026-11-05 修正：原先壳设 `WILDWORK_LISTEN=127.0.0.1:0` 让内核随机分配，
+  结果是**每次重启面板地址都变**；WebView 本来就按 `Mobile.url()` 取地址，随机端口
+  换不来任何好处。）
+  两条必须保持的点：① 壳**不得**设置 `WILDWORK_LISTEN`（任何值）——`applyEnv` 的
+  优先级高于 `config.json`，写死会把用户在面板里改的地址永久压掉，设置项看着还在
+  却重启即失效（`internal/daemon/mobile_fixed_port_test.go` 静态锁死）；
+  ② 全新安装必须走 `config.LoadOrCreate`（**不能** `config.Default()`），否则
+  `applyEnv` 被整条跳过——它不只管端口，还管 `WILDWORK_AUTH_DIR` /
+  `WILDWORK_STATE_FILE` 等数据目录。
+  `Listen.Ephemeral` / `ParseListen` 接受端口 `0` 的能力保留，服务的是
+  `WILDWORK_LISTEN=<host>:0` 这类显式请求，**与 Android 壳无关**。
+- 端口被占用时**不会自选下一个**：`daemon.Start` 返回错误、前台服务报「启动失败」
+  （R68）。手机上一次启动两个实例才会撞，正常只有一个前台服务。
 - 保活：前台服务 + `START_STICKY`。被系统回收后重建时 `onCreate` 会重新 `Mobile.start`
   （幂等，状态全在 `filesDir` 里）。
 - 停止：通知栏的「停止」，或系统设置里强制停止；面板里的「退出」也能停——
