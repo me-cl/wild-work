@@ -401,6 +401,12 @@ WPS 灵犀（`lingxi/*`，扫码/`wps_sid` 粘贴 + CDP 捕获，与 comate 共�
 > ⚠️ **本地构建是日常约束**：任何代码变更后都要重新构建 `dist/wild-work.exe`（见 §2 第 0 条）。
 > CI 不生成该文件，且 `dist/` 不入版本控制。
 > 标准流程：`go build ./... && go vet ./... && go test ./...` 全绿后再构建。
+>
+> **统一入口 `build/package.sh`**（全部细节见 [`docs/打包发版备忘.md`](docs/打包发版备忘.md)）：
+> `check`（build/vet/test + 前端静态检查，**CI 不做这些**）、`version`（核对 Go 与 Gradle
+> 两处版本号）、`bump X.Y.Z`（同步改 Go 常量 + Gradle `versionName`/`versionCode`）、
+> `windows` / `linux` / `macos` / `android` / `desktop` / `all`。脚本不写 `RELEASES.md`
+> 段落、不 commit/tag——那两步是显式动作。
 
 ```bash
 # Windows（本机直接构建，或 WSL 交叉编译）
@@ -416,8 +422,11 @@ GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o dist/wild-work-linux ./cmd/wil
 构建后核对版本号已进二进制（防止拿到旧文件）：
 
 ```bash
-# Windows bash 下用 python 字节计数（strings 对 Go 二进制的长串不可靠）
-python -c "b=open('dist/wild-work.exe','rb').read(); print('new:',b.count(b'2.8.0'),'old:',b.count(b'2.7.3'))"
+# 推荐：脚本自动用当前版本号核对（Version 常量是唯一真源，不会拿着旧号去数）
+bash build/package.sh windows
+
+# 等价的手工核对：Windows bash 下用 python 字节计数（strings 对 Go 二进制的长串不可靠）
+python -c "b=open('dist/wild-work.exe','rb').read(); print('new:',b.count(b'2.11.5'),'old:',b.count(b'2.11.4'))"
 # 期望：new >= 1 且 old == 0。若旧版本号仍在，说明构建未生效。
 ```
 

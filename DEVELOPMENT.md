@@ -288,6 +288,7 @@ Windows 图标嵌入：`rsrc -ico cmd/wild-work/icon.ico -o cmd/wild-work/rsrc_w
 
 > 完整打包链（macOS `.app`/`.dmg`、Android AAR+APK、版本号必改位置、CI 矩阵与 tag 发版流程）
 > 见 [`docs/打包发版备忘.md`](docs/打包发版备忘.md)。
+> 统一入口：`build/package.sh {check|version|bump X.Y.Z|windows|linux|macos|android|desktop|all}`。
 
 ## 6. 数据流
 
