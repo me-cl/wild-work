@@ -1,4 +1,4 @@
-package main
+package daemon
 
 import (
 	"os"
@@ -9,7 +9,7 @@ import (
 
 // 本测试锁定一个**真实 bug**（2026-09-27 发现）：
 //
-//	新增 glm 渠道时，在 main.go 创建了 glmSch、注册进 runtimes、
+//	新增 glm 渠道时，在装配层创建了 glmSch、注册进 runtimes、
 //	设了观察者，**但漏了 `go glmSch.Run(sctx)`** ——
 //	后果是「GLM 的自动签到与保活从不运行」，而手工触发仍可用，
 //	**不报错、不崩溃**，极难发现（用户是手工签到后才发现的）。
@@ -22,9 +22,9 @@ import (
 // 而"定义了却没启动"这个疏漏**在源码层面就能判定**。
 
 func TestAllSchedulersAreStarted(t *testing.T) {
-	src, err := os.ReadFile("main.go")
+	src, err := os.ReadFile("daemon.go")
 	if err != nil {
-		t.Fatalf("读 main.go 失败: %v", err)
+		t.Fatalf("读 daemon.go 失败: %v", err)
 	}
 	code := string(src)
 
@@ -35,7 +35,7 @@ func TestAllSchedulersAreStarted(t *testing.T) {
 		defs[m[1]] = true
 	}
 	if len(defs) == 0 {
-		t.Fatal("未在 main.go 中找到任何 scheduler.New 定义（正则失效？）")
+		t.Fatal("未在 daemon.go 中找到任何 scheduler.New 定义（正则失效？）")
 	}
 	t.Logf("发现 %d 个调度器定义: %v", len(defs), keys(defs))
 
@@ -56,7 +56,7 @@ func TestAllSchedulersAreStarted(t *testing.T) {
 	}
 	if len(missing) > 0 {
 		t.Errorf("❌ 以下调度器已定义但**未启动**（自动签到/保活不会运行，且不报错）:\n  %s\n"+
-			"修复：在 main.go 的「调度器后台运行」段补 `go %s.Run(sctx)`",
+			"修复：在 daemon.go 的「调度器后台运行」段补 `go %s.Run(sctx)`",
 			strings.Join(missing, "\n  "), missing[0])
 	}
 }
@@ -66,9 +66,9 @@ func TestAllSchedulersAreStarted(t *testing.T) {
 //
 // 防止"注册了渠道但忘了启动其调度器"（本次 bug 的形态）。
 func TestSchedulerCountMatchesRuntimes(t *testing.T) {
-	src, err := os.ReadFile("main.go")
+	src, err := os.ReadFile("daemon.go")
 	if err != nil {
-		t.Fatalf("读 main.go 失败: %v", err)
+		t.Fatalf("读 daemon.go 失败: %v", err)
 	}
 	code := string(src)
 

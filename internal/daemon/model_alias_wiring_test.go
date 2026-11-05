@@ -1,4 +1,4 @@
-package main
+package daemon
 
 import (
 	"os"
@@ -14,14 +14,15 @@ import (
 //	后果：Chat 能用别名、Codex / Claude Code 不能 —— 不报错不崩溃，用户只能猜。
 //
 // 静态锁死两条：
-//  ① 降级链 syncer 闭包里必须同时出现 inner.SetModelFallbacks 与 compat.SetAliases，
-//     且别名表经 config.AliasIndex 派生（单一来源，不在装配层另写清洗逻辑）；
-//  ② 兼容层构造时（启动路径）必须带上配置里的别名表，不得只靠面板热更新
-//     ——否则重启后别名在 Responses/Anthropic 上静默消失。
+//
+//	① 降级链 syncer 闭包里必须同时出现 inner.SetModelFallbacks 与 compat.SetAliases，
+//	   且别名表经 config.AliasIndex 派生（单一来源，不在装配层另写清洗逻辑）；
+//	② 兼容层构造时（启动路径）必须带上配置里的别名表，不得只靠面板热更新
+//	   ——否则重启后别名在 Responses/Anthropic 上静默消失。
 func TestModelFallbackSyncerPushesAliasesToBothLayers(t *testing.T) {
-	src, err := os.ReadFile("main.go")
+	src, err := os.ReadFile("daemon.go")
 	if err != nil {
-		t.Fatalf("读 main.go 失败: %v", err)
+		t.Fatalf("读 daemon.go 失败: %v", err)
 	}
 	code := string(src)
 

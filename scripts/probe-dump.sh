@@ -21,7 +21,7 @@
 # 注意：会真实消耗各账号额度（每次约几十 token）。
 set -uo pipefail
 
-HOST="${WILDWORK_HOST:-http://127.0.0.1:7863}"
+HOST="${WILDWORK_HOST:-http://127.0.0.1:17863}"
 API_KEY="${WILDWORK_API_KEY:-WildWorkAPI}"
 DUMP_DIR="${WILDWORK_DUMP_DIR:-$PWD/temp/dump}"
 OUT="$PWD/temp/probe"

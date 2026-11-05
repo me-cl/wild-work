@@ -213,7 +213,8 @@
      同步 Go 与 JS 两侧判据**（`isMaskedKey` 认 `****`/`…`/`••` 三种；只认新形会把升级瞬间
      浏览器里还渲染着的旧串当真值落盘，把可用密钥洗成废值），且**前端不得再做二次脱敏**。
 3. auth 文件嵌套格式 `{auth:{...},account:{...}}`，`internal/auth.Parse` 与 login.SaveAuth 必须一致
-4. `config.listen` 兼容新对象格式 + 旧字符串格式 `":7863"`
+4. `config.listen` 兼容新对象格式 + 旧字符串格式 `":7863"`（默认端口 `config.DefaultPort` = **17863**；
+   老配置里写死的 `7863` 原样沿用，**不做静默迁移**——悄悄改用户的监听地址比端口冲突更难排查）
 5. `data/state-*.json` 只增不减字段，向后兼容；旧 state.json 自动迁移
 6. 托盘回调必须 goroutine 化
 7. `config.example.json` 与 `config.Default()` 同步
@@ -344,20 +345,22 @@
 | 登录 | `internal/login` + `login_*` | 纯 HTTP + 本地回调端口（或 CDP 捕获），跨平台 |
 | 平台能力 | `internal/platform` + build tag | 浏览器无痕/开机自启/消息框/日志/工作区，接口同名 |
 | 构建 | WSL 交叉编译 win；CI macos-latest 编 darwin | 见 R11 |
+| 进程装配 | `internal/daemon.Start/Stop/Addr` | 桌面 `cmd/wild-work` 与 Android `mobile/` 共用，桌面只多托盘+信号 |
+| Android | `mobile/`（gomobile bind）+ `shell/android`（Kotlin WebView 壳） | 前台服务保活，面板一行未改；见 `shell/android/README.md` |
 
 **托盘菜单**（固定，不做动态内容）：`打开主界面` / `查看日志` / `退出`；
 单击与双击 = 打开主界面；各菜单项用不同颜色纯 Go 生成图标。
 
 **平台能力差异表**（`internal/platform`）：
 
-| 能力 | Windows | macOS | Linux |
-|------|---------|-------|-------|
-| 打开浏览器 | rundll32 url.dll | `open <url>` | xdg-open |
-| 系统消息框 | MessageBoxW | osascript display dialog | stderr |
-| 开机自启 | 注册表 Run | LaunchAgent plist | 未实现 |
-| 打开日志文件 | notepad | open -a TextEdit | xdg-open |
-| 确认框 | MessageBoxW YESNO | osascript buttons | 默认否 |
-| 无头模式 | --no-tray | --no-tray | --no-tray（推荐） |
+| 能力 | Windows | macOS | Linux | Android |
+|------|---------|-------|-------|---------|
+| 打开浏览器 | rundll32 url.dll | `open <url>` | xdg-open | 无操作（自带 WebView） |
+| 系统消息框 | MessageBoxW | osascript display dialog | stderr | stderr（日志） |
+| 开机自启 | 注册表 Run | LaunchAgent plist | 未实现 | 无（无 BOOT_COMPLETED 注册） |
+| 打开日志文件 | notepad | open -a TextEdit | xdg-open | 无操作 |
+| 确认框 | MessageBoxW YESNO | osascript buttons | 默认否 | 默认否 |
+| 无头模式 | --no-tray | --no-tray | --no-tray（推荐） | 恒无头（前台服务） |
 
 **面板区块与 API 全量清单**见 [`docs/接口参考.md`](docs/接口参考.md)。
 
@@ -444,9 +447,9 @@ git tag vX.Y.Z && git push origin vX.Y.Z
    不存在任何 dump 代码（实测 `dist/wild-work.exe` 里 `WILDWORK_DUMP_DIR` 计数为 0）。
 2. **运行期**：仅当环境变量 `WILDWORK_DUMP_DIR` 非空才真正落盘。
 
-**接线点只有一个**：`cmd/wild-work/transport.go` 的 `wrapDumps`（R57 后唯一统一改 Transport 的地方；
+**接线点只有一个**：`internal/daemon/transport.go` 的 `wrapDumps`（R57 后唯一统一改 Transport 的地方；
 启动时一次性包住全部渠道 client），故各渠道包**零改动**；漏项由
-`cmd/wild-work/transport_test.go` 静态锁死。文件落 `$WILDWORK_DUMP_DIR/<channel>/*.http`，
+`internal/daemon/transport_test.go` 静态锁死。文件落 `$WILDWORK_DUMP_DIR/<channel>/*.http`，
 尾部带 `# duration=… usage=…` 汇总行（SSE 取**末帧**）。
 
 > ⚠️ **落盘必须 tee，不得 `io.ReadAll(resp.Body)`**：后者会把整个响应缓冲到底

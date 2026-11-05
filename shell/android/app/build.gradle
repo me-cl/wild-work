@@ -1,0 +1,55 @@
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+}
+
+android {
+    namespace 'com.wildwork.app'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId "com.wildwork.app"
+        // Android 8.0（26）：前台服务用 startForegroundService、通知渠道是必需的，
+        // 且这是 Go 官方支持的最低 Android 版本量级。往下调没有收益。
+        minSdk 26
+        targetSdk 35
+        versionCode 1
+        versionName "2.11.4"
+
+        ndk {
+            // gomobile bind 只产出这两种 ABI（见 build-aar.sh）。
+            // 不要加 x86 系：模拟器上跑没有实际使用场景，白白翻倍 APK 体积。
+            abiFilters 'arm64-v8a', 'armeabi-v7a'
+        }
+    }
+
+    buildTypes {
+        release {
+            // 不混淆：gomobile 生成的类通过 JNI 反射调用，混淆会把类名削掉。
+            // 外壳本身只有两个类，混淆带来的收益接近零。
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    kotlinOptions {
+        jvmTarget = '17'
+    }
+
+    packagingOptions {
+        // AAR 里已经带了 libgojni.so，壳的 jniLibs 目录留空即可。
+        jniLibs { useLegacyPackaging false }
+    }
+}
+
+dependencies {
+    // gomobile bind 的产物（build-aar.sh 生成，见 shell/android/README.md）
+    implementation(name: 'wildwork', ext: 'aar')
+    implementation 'androidx.appcompat:appcompat:1.7.0'
+    implementation 'androidx.webkit:webkit:1.12.1'
+}

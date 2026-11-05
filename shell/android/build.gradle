@@ -1,0 +1,7 @@
+// 顶层构建脚本：只声明插件版本，具体配置在 app/build.gradle。
+plugins {
+    id 'com.android.application' version '8.7.3' apply false
+    // 外壳用 Kotlin 写：.kt 只有挂了 Kotlin 插件才会被编译，否则会被构建系统
+    // 静默忽略（既不报错也不产出类），直到运行时才炸 ClassNotFoundException。
+    id 'org.jetbrains.kotlin.android' version '2.0.21' apply false
+}

@@ -3,7 +3,12 @@
 // 按 build tag 拆分实现（各平台保持同名导出函数，接口不变量）：
 //   - platform_windows.go  （GOOS=windows）
 //   - platform_darwin.go   （GOOS=darwin）
+//   - platform_android.go  （GOOS=android：无 shell，打开类操作一律无操作）
 //   - platform_other.go    （其余平台，简化实现）
+//
+// Android 必须单独成文件而不能落进 platform_other.go：`GOOS=android` 会让
+// `!windows && !darwin` 成立，于是 xdg-open 那套会被编进 APK —— 调用即
+// exec: "xdg-open": executable file not found，且错误会冒到 app 的登录流程里。
 //
 // 上层（internal/app、cmd/wild-work）只依赖本包导出的函数，不接触任何平台代码。
 package platform

@@ -96,6 +96,16 @@ type Options struct {
 	Handler    *server.Handler
 	// Ledger 流水记账器（main 装配时创建，与 scheduler 共用同一实例）；nil 时 App 自建。
 	Ledger *ledger.Ledger
+
+	// Embedded 表示宿主是「嵌入进程」（Android 壳、未来的其他嵌入方），
+	// 而不是独立的桌面/服务器进程。面板的「退出」在嵌入式宿主里必须**只停服务**
+	// 不 os.Exit：进程是宿主 App 的，杀掉它会连带终止整个 App 界面，而用户看到的
+	// 「退出」只是想关掉代理。桌面端保持原语义（退出即退出进程）。
+	Embedded bool
+
+	// OnQuit 嵌入式宿主里「面板点了退出」之后的善后回调（桌面端不用）。
+	// 装配层（daemon）用它把「服务已停」这件事传播给宿主外壳；为 nil 时只停服务。
+	OnQuit func()
 }
 
 // App 应用编排。
@@ -107,7 +117,10 @@ type App struct {
 	// 读写一律经 runtimesMu 保护：后台统计喂入器（30s ticker）与 /api/state 轮询
 	// 都会遍历此表，若不加锁，与保存操作重叠时即 Go 的
 	// `fatal error: concurrent map read and map write`（不可 recover，daemon 直接死）。
-	runtimes   map[provider.Kind]*Runtime
+	runtimes map[provider.Kind]*Runtime
+	// embedded / onQuit 见 Options：嵌入式宿主的「退出」不杀进程，改为回调宿主。
+	embedded   bool
+	onQuit     func()
 	runtimesMu sync.RWMutex
 	handler    *server.Handler // 内层（保留强类型，用于 SetAPIKey/ChannelModels 等）
 	httpRoot   http.Handler    // 对外暴露的根 handler，可能为外层兼容层 mux（见 SetRootHandler）
@@ -201,6 +214,8 @@ func New(opts Options) (*App, error) {
 	a := &App{
 		cfgPath:  opts.ConfigPath,
 		cfg:      opts.Config,
+		embedded: opts.Embedded,
+		onQuit:   opts.OnQuit,
 		runtimes: opts.Runtimes,
 		handler:  opts.Handler,
 		auth:     newAuthState(),
@@ -636,13 +651,25 @@ func (a *App) serveLocked(addr string) error {
 		ReadHeaderTimeout: 30 * time.Second,
 	}
 	a.httpSrv = srv
-	a.listenAddr = addr
+	// 存**实际**监听地址而非入参：端口写 0（由内核分配）时入参永远是
+	// "127.0.0.1:0"，面板与 Android 外壳都拿不到真实端口。
+	a.listenAddr = ln.Addr().String()
 	go func() {
 		if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
 			log.Printf("http serve %s: %v", addr, err)
 		}
 	}()
 	return nil
+}
+
+// ListenAddr 返回当前实际监听地址（形如 127.0.0.1:17863）；未启动时为空。
+//
+// 与 cfg.Listen.Addr() 的差别：面板改端口后这里立即是新值，且端口写 0 时拿到的是
+// 内核分配的真实端口。Android 外壳靠它拼 WebView 的 URL。
+func (a *App) ListenAddr() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.listenAddr
 }
 
 // Stop 停止 HTTP 服务（退出时调用）。
@@ -661,7 +688,20 @@ func (a *App) Stop() {
 }
 
 // Quit 退出整个程序（Web UI“退出”按钮调用）。
+//
+// 嵌入式宿主（Options.Embedded，Android）走另一条路：只停服务、返回。
+// 那里的进程属于宿主 App，os.Exit 会连带杀掉整个界面；而且服务若是前台服务，
+// START_STICKY 还会把它拉回来——用户点了「退出」却停不下来。
 func (a *App) Quit() {
+	if a.embedded {
+		// 先摘托盘（Android 是空实现，桌面嵌入式宿主也应有对称行为）。
+		systray.Quit(3 * time.Second)
+		a.Stop()
+		if a.onQuit != nil {
+			a.onQuit()
+		}
+		return
+	}
 	// 先摘托盘图标：回收发生在托盘消息循环里，放在停机之后会被 Close 关掉日志、
 	// 也可能被 os.Exit 抢在前面，Windows 任务栏就会留下幽灵图标。
 	systray.Quit(3 * time.Second)
@@ -1051,6 +1091,14 @@ func (a *App) StartLoginFor(kind string) (string, error) {
 // 探测不到支持无痕的浏览器 / 启动失败时**退回系统默认打开**：可用性优先于隔离性，
 // 并在日志里说明原因，便于排查「为什么还是登录成了老账号」。
 func (a *App) openAuthURLIncognito(url string) {
+	// 嵌入宿主（Android WebView）：`platform.OpenURL` / `LaunchIncognito` 在该平台都是
+	// **显式空实现**，走到下面只会打一条「未探测到无痕浏览器」的误导日志。授权页由面板的
+	// 「打开网页」按钮经 JS 桥交给系统浏览器，这里直接返回（`loginBackendOpened` 保持 false，
+	// 前端据此只显示链接、不声称「已为你打开」）。
+	if a.embedded {
+		log.Printf("登录：嵌入宿主机型不自动打开浏览器，授权页交由面板「打开网页」触发")
+		return
+	}
 	exe, flag, ok := platform.DefaultBrowserIncognito()
 	if !ok {
 		log.Printf("登录：未探测到支持无痕的默认浏览器，退回系统默认打开（可能带上已有登录态）")
@@ -1711,10 +1759,10 @@ func (a *App) SubmitClineKey(apiKey string) (string, string, error) {
 //
 // 验证只调 GET /models —— **零积分消耗**，避免「添加账号即烧积分」。
 // 上游 /models 不回传任何身份字段（实测），uid 用 sid 的 sha256 前 16 位兜底
-//（与 cline probeKey 的 hash 兜底同款：只需稳定且不含明文）。
+// （与 cline probeKey 的 hash 兜底同款：只需稳定且不含明文）。
 //
 // 同账号检测：wps_sid 与已入库账号逐字比对 —— 同一份 sid 重复添加不扩额度
-//（积分按 WPS 账号计），提示用户换账号而不是重复粘贴。
+// （积分按 WPS 账号计），提示用户换账号而不是重复粘贴。
 func (a *App) SubmitComateSID(sid string) (string, string, error) {
 	// 容错：用户常把整段 Cookie / DevTools 表格一行 / 带引号的值一起粘进来，
 	// 这里先规整成裸值（否则报「sid 无效」，用户完全无从自查）。
@@ -3822,6 +3870,11 @@ type State struct {
 	Autostart   bool   `json:"autostart"`
 	Running     bool   `json:"running"`
 
+	// Embedded 表示面板运行在**嵌入宿主**里（Android 壳的 WebView）。嵌入宿主的浏览器
+	// 是 App 内嵌 WebView，`window.open`/CDP 拉起桌面浏览器都不可用——前端据此
+	// 跳过「自动打开网页」，改走「复制链接 + 打开网页（外置浏览器）」与粘贴/扫码兜底。
+	Embedded bool `json:"embedded"`
+
 	// LanIP 非环回出口 IP（如 192.168.x.x），供面板在监听 0.0.0.0 时提示局域网可用的 API 地址。
 	// 取不到（无网络/全部环回）时为空串。
 	LanIP string `json:"lan_ip"`
@@ -3864,8 +3917,18 @@ type State struct {
 // GetState 返回面板初始数据。
 func (a *App) GetState() State {
 	a.mu.Lock()
-	pass, listen := a.cfg.AdminPass, a.cfg.Listen
+	pass, listen, bound := a.cfg.AdminPass, a.cfg.Listen, a.listenAddr
 	a.mu.Unlock()
+	// 端口交给内核分配时（Android 壳传 WILDWORK_LISTEN=127.0.0.1:0），配置里的
+	// Port 恒为 0 —— 面板若照搬会显示 `http://127.0.0.1:0/v1`，用户复制到客户端
+	// 必然连不上。改用实际绑定的端口回显。
+	if listen.Ephemeral {
+		if _, portStr, err := net.SplitHostPort(bound); err == nil {
+			if p, err := strconv.Atoi(portStr); err == nil && p > 0 {
+				listen.Port = p
+			}
+		}
+	}
 	authOn := strings.TrimSpace(pass) != ""
 	brief := passBrief(pass)
 	session := ""
@@ -3889,6 +3952,7 @@ func (a *App) GetState() State {
 		Version:        Version,
 		Autostart:      a.AutostartEnabled(),
 		Running:        a.ServerRunning(),
+		Embedded:       a.embedded,
 		LanIP:          lanIP(),
 		LoopGuard:      a.cfg.Features.LoopGuard,
 	}

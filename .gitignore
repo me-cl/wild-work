@@ -40,3 +40,14 @@ Thumbs.db
 github_token.txt
 HANDOFF.md
 GO多平台发布备忘.md
+
+# Android 外壳（shell/android）
+# 产物与本地 SDK 路径都不入库；AAR 由 build-aar.sh 现场生成。
+shell/android/local.properties
+shell/android/.gradle/
+shell/android/build/
+shell/android/app/build/
+shell/android/app/libs/*.aar
+shell/android/*.keystore
+shell/android/*.jks
+build/android/

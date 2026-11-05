@@ -118,7 +118,7 @@ func TestRefreshTokenMissing(t *testing.T) {
 //     确认调用后行为符合预期——特别是不允许出现 `unknown login provider`。
 //     （其余渠道会真的去起登录流程，这里只做第 1 层的源码比对。）
 func TestReloginChannelSetMatchesBackend(t *testing.T) {
-	js, err := os.ReadFile("../../cmd/wild-work/web/app.js")
+	js, err := os.ReadFile("../../internal/webui/web/app.js")
 	if err != nil {
 		t.Fatalf("读 app.js 失败：%v", err)
 	}
@@ -229,7 +229,7 @@ func TestAccountViewCarriesRefreshTokenMissing(t *testing.T) {
 	// 前端契约：app.js 读的字段名必须与 Go 侧 json tag 一致（历史上多次因改名而两边脱节）。
 	// 判据取源码文本（同 monkeycode/loomy 的既有做法），避免「改了 tag 忘了前端」这类
 	// 只在运行时才暴露的问题。
-	src, err := os.ReadFile("../../cmd/wild-work/web/app.js")
+	src, err := os.ReadFile("../../internal/webui/web/app.js")
 	if err != nil {
 		t.Fatalf("读 app.js 失败：%v", err)
 	}

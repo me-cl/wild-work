@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">wild-work</string>
+    <string name="notif_channel_name">wild-work 代理服务</string>
+    <string name="notif_title">wild-work 运行中</string>
+    <string name="notif_text">渠道聚合代理正在后台提供服务</string>
+    <string name="action_open_panel">打开面板</string>
+    <string name="action_stop">停止</string>
+    <string name="start_failed">服务启动失败</string>
+    <string name="loading_panel">正在启动服务…</string>
+    <string name="load_failed">面板加载失败\n\n%1$s\n\n若服务仍在后台运行，可下拉重启或从通知点开重试。</string>
+</resources>

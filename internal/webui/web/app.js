@@ -867,6 +867,36 @@ const isImportLocal = (ch) => IMPORT_LOCAL_CHANNELS.has(ch);
 // 等价入口「粘贴 wps_sid」保留在 promptLogin 的 lingxi 分支（弹 lingxiOverlay）。
 const WEB_LOGIN_CHANNELS = new Set(["raccoon", "loomy", "lingxi"]);
 const hasWebLogin = (ch) => WEB_LOGIN_CHANNELS.has(ch);
+// isEmbedded 面板是否跑在**嵌入宿主**里（Android 壳的 WebView，后端 /api/state 的
+// `embedded` 字段，装配自 app.Options.Embedded）。
+//
+// 为什么必须区分：嵌入宿主的浏览器就是 App 内嵌 WebView 本身——
+//   ① 后端 CDP 拉桌面浏览器（raccoon/lingxi/glm）在 Android 上必然失败（没有 Edge/Chrome
+//      可执行文件，internal/cdp.FindBrowser 的回退分支返回错误）⇒ 接口直接 400；
+//   ② 前端 window.open 在没被 shouldOverrideUrlLoading 接管的 WebView 里开不出新窗口，
+//      表现为「点了没反应 / 报错」。
+// 所以嵌入宿主下**一律不自动打开**，只给「复制链接」与「打开网页」（由外壳转交系统浏览器），
+// 并优先把用户引到已有的粘贴/扫码入口（comate 扫码、lingxi/comate 粘贴 wps_sid、
+// glm 粘贴 refresh_token、raccoon 从客户端导入）。
+// 判据取后端字段而不是 UA 嗅探：UA 可能被用户/系统改写，而后端知道自己是嵌入装配的。
+const isEmbedded = () => !!(state && state.embedded);
+// openExternal 在一个**新上下文**里打开 URL（桌面端 = 系统默认浏览器新标签页；
+// 嵌入宿主 = 壳转交系统浏览器，见 MainActivity 的 WildWorkHost.openExternal）。
+//
+// 为什么不能只靠 window.open：WebView 默认不处理 target=_blank（未开
+// setSupportMultipleWindows + onCreateWindow 时它**静默丢弃**），而且即便打开也是在
+// App 内再开一个 WebView —— 用户要的是「打开网页到系统浏览器」。故嵌入宿主优先走
+// JS 桥；拿不到桥（旧壳/桌面）才退回 window.open。两种情形都并列提供「复制链接」兜底。
+function openExternal(url) {
+  if (!url) { toast("暂无链接"); return; }
+  const host = window.WildWorkHost;
+  if (host && typeof host.openExternal === "function") {
+    // 桥返回 false = 明确拒绝（非 http(s) / 没有可处理链接的应用）。此时再退回
+    // window.open 至少让页面自己试一次，总好过点了没反应；undefined（旧壳）按成功算。
+    try { if (host.openExternal(String(url)) !== false) return; } catch (e) { /* 桥调用异常退回 window.open */ }
+  }
+  window.open(url, "_blank", "noopener,noreferrer");
+}
 // 粘贴凭据型渠道：没有浏览器登录编排，凭据由用户从官方站点自行创建后粘贴进来。
 // Cline：app.cline.bot → 注册账号 → Account / API Keys 建 sk_ Key（见 internal/cline）。
 // Comate：WPS 账号 → 浏览器登录 www.wps.cn → 复制 Cookie 里的 wps_sid（见 internal/comate）。
@@ -1883,6 +1913,45 @@ function promptLogin(channel) {
   }
 
   // 网页版登录渠道：主按钮走「拉起浏览器 + 自动捕获凭据」，次按钮回退到本机客户端导入。
+  //
+  // ⚠️ 嵌入宿主（Android WebView）下这两条路都不通：后端 CDP 拉不起桌面浏览器
+  // （接口必 400「未找到 Edge/Chrome」），前端 window.open 也开不出系统浏览器
+  // ⇒ 一律改为「只讲手工路径」，主按钮经 pendingAction 分派到对应的粘贴/扫码弹层。
+  // 注意：这里**不得**改写 `btnLoginConfirm.onclick`——bind() 只装一次，改写会让
+  // 后续所有渠道的「登录」按钮继续走本次分支（串台）。分派一律走 pendingAction。
+  if (hasWebLogin(channel) && isEmbedded()) {
+    $("lcTitle").textContent = "添加 " + name + " 账号";
+    const tail = `<div class="glm-warn" style="margin-top:10px">`
+      + `<div class="glm-warn-title">手机 / 无桌面环境说明</div>`
+      + `本应用内嵌浏览器无法拉起独立的桌面浏览器窗口（自动捕获登录态只在电脑版可用），`
+      + `请改用下面的<b>手工方式</b>：复制凭据粘贴进来，效果与自动登录完全相同。`
+      + `</div>`;
+    if (channel === "lingxi") {
+      pendingAction = "paste_lingxi";
+      $("lcMsg").innerHTML = `点「粘贴 wps_sid」：在手机或电脑的浏览器里登录 `
+        + `<b>lingxi.kdocs.cn</b>，复制 <code>wps_sid</code> Cookie 的值粘进来。` + tail;
+      $("btnLoginConfirm").textContent = "粘贴 wps_sid";
+    } else if (channel === "raccoon") {
+      // 小浣熊只有两条添加路径：CDP 自动捕获（手机上拉不起浏览器）与读本机客户端凭据，
+      // **没有**「粘贴 xhx_token」的入口。手机上客户端文件同样通常不存在，所以要如实
+      // 说明「本机有客户端才可用」，不能给一个走不通的第三选项。
+      pendingAction = "import";
+      $("lcMsg").innerHTML = `本应用无法自动拉起浏览器捕获登录态。请先在本机官方客户端里登录小浣熊，`
+        + `再点「从客户端导入」直接读取已登录凭据（需要本机装了官方客户端）；`
+        + `本机没有客户端时，小浣熊暂时无法在手机上添加，请在电脑版添加该账号。` + tail;
+      $("btnLoginConfirm").textContent = "从客户端导入";
+    } else {
+      // Loomy：本机登录引导页由 Go 侧在 127.0.0.1 上起（手机本机可达），
+      // 嵌入宿主下仍可打开 —— 但需要浏览器承载表单，故登录后主按钮改用
+      // 「打开网页」（系统浏览器）而不是内嵌 WebView。
+      pendingAction = "login";
+      $("lcMsg").innerHTML = `点「登录 ${name}」会在本机起一个登录引导页，`
+        + `再点「复制链接」或「打开网页」在系统浏览器打开它，输入手机号并填写短信验证码即可。` + tail;
+      $("btnLoginConfirm").textContent = "登录" + name;
+    }
+    $("loginConfirmOverlay").classList.remove("hidden");
+    return;
+  }
   if (hasWebLogin(channel)) {
     pendingAction = "login";
     $("lcTitle").textContent = "添加 " + name + " 账号";
@@ -1923,10 +1992,7 @@ function promptLogin(channel) {
       altBtn.classList.remove("hidden");
       altBtn.onclick = () => {
         $("loginConfirmOverlay").classList.add("hidden");
-        $("lingxiSidInput").value = "";
-        $("lingxiErr").textContent = "";
-        $("lingxiOverlay").classList.remove("hidden");
-        setTimeout(() => $("lingxiSidInput").focus(), 30);
+        openLingxiPaste();
       };
       $("loginConfirmOverlay").classList.remove("hidden");
       return;
@@ -1978,11 +2044,23 @@ function promptLogin(channel) {
   }
   // CodeArts：授权页必须避开日常浏览器里的华为云登录态（否则永远被授权成已登录的那个账号），
   // 后端会用**无痕窗口**打开；同时需要用户填「账号标识」来区分多个华为账号。
+  //
+  // 嵌入宿主（Android WebView）下后端拉不起无痕窗口（platform.LaunchIncognito 在
+  // android 是显式空实现）⇒ 授权页由用户自己点「打开网页」在系统浏览器里开，
+  // 登录后浏览器跳回的 127.0.0.1 回调打不开，改用「提交回调」把地址栏 URL 粘回来。
   if (channel === "codearts") {
     $("lcTitle").textContent = "添加 CodeArts 账号";
-    $("lcMsg").innerHTML = `点击「登录 CodeArts」会打开一个<b>无痕浏览器窗口</b> —— `
-      + `无痕会话不带日常浏览器的华为云登录态（否则你只会被授权成<b>已登录的那个</b>账号）。`
-      + `请在其中登录<b>你想要添加的那个</b>华为账号。`
+    $("lcMsg").innerHTML = (isEmbedded()
+      // 嵌入宿主里「系统浏览器」与网关**是同一台设备**，所以写死回环的授权回调
+      // 反而能直接打回本机守护进程 —— 自动完成（这也是它与桌面远程场景的区别）。
+      // 只有浏览器被换成另一台机器/回调失败时才需要手工粘贴，故那句放在条件里。
+      ? `点击「登录 CodeArts」后，请再点「打开网页」在系统浏览器里完成授权`
+        + `（无痕隔离由你的浏览器负责，别用已登录华为云的标签页）。`
+        + `授权完成后浏览器会跳回本机 127.0.0.1，本工具自动完成登录。`
+        + `若该页面打不开，把地址栏里的完整 URL 粘到下面「提交回调」里即可。`
+      : `点击「登录 CodeArts」会打开一个<b>无痕浏览器窗口</b> —— `
+        + `无痕会话不带日常浏览器的华为云登录态（否则你只会被授权成<b>已登录的那个</b>账号）。`
+        + `请在其中登录<b>你想要添加的那个</b>华为账号。`)
       + `<div class="glm-warn" style="margin-top:10px">`
       + `<div class="glm-warn-title">为什么要填「账号标识」</div>`
       + `华为云不回传账号身份信息，本工具无法自动分辨「同一账号重新登录」与「另一个账号」。`
@@ -2006,9 +2084,20 @@ function confirmLogin() {
   $("loginConfirmOverlay").classList.add("hidden");
   if (!pendingChannel) return;
   // 按 pendingAction 分发：小浣熊两种动作都支持，不能只看渠道是否属于导入型。
-  if (pendingAction === "import") importLocal(pendingChannel);
+  // paste_lingxi 是嵌入宿主（Android）的降级路径：拉不起浏览器 ⇒ 直接把用户
+  // 送到已有的「粘贴 wps_sid」弹层（与 promptLogin 桌面分支里的次按钮同一目标）。
+  if (pendingAction === "paste_lingxi") openLingxiPaste();
+  else if (pendingAction === "import") importLocal(pendingChannel);
   else if (pendingChannel === "officeace") startOfficeAceWebLogin();
   else startLogin(pendingChannel, loginLabelValue());
+}
+
+// openLingxiPaste 打开「粘贴 wps_sid」弹层（桌面分支的次按钮与嵌入宿主的主按钮共用）。
+function openLingxiPaste() {
+  $("lingxiSidInput").value = "";
+  $("lingxiErr").textContent = "";
+  $("lingxiOverlay").classList.remove("hidden");
+  setTimeout(() => $("lingxiSidInput").focus(), 30);
 }
 
 // loginLabelValue 读取登录弹窗里的「账号标识」：只对需要它的渠道（CodeArts）有意义，
@@ -2043,6 +2132,15 @@ async function startLogin(channel, accountLabel) {
   // 与「添加账号」都走同一条路，避免再出现「前端能点、后端不认」的死按钮。
   // （2026-10-18：卡片 ⟳ 曾直接 startLogin('officeace') 而只弹 unknown login provider。）
   if (channel === "officeace") return startOfficeAceWebLogin();
+  // 嵌入宿主（Android WebView）下的 CDP 渠道：卡片上的 ⟳ 与「添加账号」都可能直达
+  // 这里。raccoon/lingxi 的后端 Start 会调 cdp.Launch 拉桌面浏览器 ⇒ 在手机上必定
+  // 400（「未找到 Edge/Chrome」）。故**在发请求之前**就改道到手工路径，
+  // 既不让用户看到红色报错，也不给后端制造一次注定失败的流程。
+  if (isEmbedded() && (channel === "raccoon" || channel === "lingxi")) {
+    if (channel === "lingxi") openLingxiPaste();
+    else importLocal("raccoon");
+    return;
+  }
   try {
     const r = await api("/api/login/start", { channel, account_label: accountLabel || "" });
     const url = r.auth_url;
@@ -2053,35 +2151,49 @@ async function startLogin(channel, accountLabel) {
     //     带登录态的标签页，用户又会被授权成老账号，无痕那一步就白做了；
     //  ② 网页版登录渠道（glm / 小浣熊）—— 后端用独立 profile + CDP 拉起，同理不能 open
     //     （那个标签页没有调试端口，捕获不到）；
-    //  ③ 其余渠道 —— 由前端 window.open 打开（它们不需要隔离登录态）。
+    //  ③ 其余渠道 —— 由前端打开（它们不需要隔离登录态）。
+    //
+    // ⚠️ 嵌入宿主（Android WebView）下一律**不自动打开**：后端 CDP 拉不起桌面浏览器
+    // （接口已 400，走不到这里的是 raccoon/lingxi/glm 那条路），前端 window.open 在
+    // WebView 里也开不出系统浏览器 —— 自动打开只会静默失败或报错。改为：弹层里同时给
+    // 「复制链接」与「打开网页」（后者经 JS 桥转交系统浏览器），用户自己点。
+    const embedded = isEmbedded();
     if (r.backend_opened) {
       $("loginMsg").textContent = `已为你打开一个**无痕窗口**，请在其中完成 ${chLabel(channel)} 登录；`
         + `登录完成后无需任何操作，本工具会自动添加账号。`;
     } else if (channel === "loomy") {
       // Loomy 与 ② 相反：后端**不**拉浏览器，返回的是本机登录引导页地址，
-      // 必须由前端 window.open 打开（见 internal/login_loomy）。它也不「捕获凭据」——
+      // 必须由前端打开（见 internal/login_loomy）。它也不「捕获凭据」——
       // 用户在引导页里填手机号 + 短信验证码，后端据此换 session。
-      $("loginMsg").textContent = `已为你打开 Loomy 登录页，请在其中输入手机号并填写短信验证码；`
+      $("loginMsg").textContent = (embedded
+        ? `登录页已就绪，请点「打开网页」在系统浏览器中打开；在其中输入手机号并填写短信验证码。`
+        : `已为你打开 Loomy 登录页，请在其中输入手机号并填写短信验证码；`)
         + `登录完成后本工具会自动添加账号。登录态约 14 天后到期，届时需重新登录。`;
-      window.open(url, "_blank", "noopener,noreferrer");
+      if (!embedded) openExternal(url);
     } else if (hasWebLogin(channel)) {
       $("loginMsg").textContent = `已为你打开一个独立的浏览器窗口，请在其中完成${chLabel(channel)}登录；`
         + `登录完成后无需任何操作，本工具会自动捕获凭据并添加账号。`;
     } else {
-      $("loginMsg").textContent = "请在浏览器新窗口中完成登录…";
-      window.open(url, "_blank", "noopener,noreferrer");
+      $("loginMsg").textContent = embedded
+        ? "请点「打开网页」在系统浏览器中完成登录…"
+        : "请在浏览器新窗口中完成登录…";
+      if (!embedded) openExternal(url);
     }
     $("loginOverlay").classList.remove("hidden");
     $("btnCopyUrl").dataset.url = url;
+    $("btnOpenUrl").dataset.url = url;
     // 2026-10-18（H9）：后端告知这次登录是否需要轮询。
     // 改造前这里**无条件** startLoginPoll()，而 GLM 属于「只给链接、不跑流程」的渠道
     // （后端不置 loginBusy、不起 pollLogin）⇒ 轮询看到 login_busy=false 便提示
     // 「登录完成，正在同步账号…」，实际什么都没发生 —— 假成功。
     // 现在只有真发起登录流程的渠道才轮询；只给链接的渠道引导用户改用粘贴入口。
     if (r.needs_poll === false) {
-      $("loginMsg").textContent = "已为你打开登录页。请按页面提示登录后，"
-        + "从浏览器 Cookie 中取出 refresh_token 粘贴到下方，再点「提交」。";
-      window.open(url, "_blank", "noopener,noreferrer");
+      $("loginMsg").textContent = embedded
+        ? "请点「打开网页」在系统浏览器里登录，再从 Cookie 中取出 refresh_token 粘贴到下方，"
+          + "再点「提交」。"
+        : "已为你打开登录页。请按页面提示登录后，"
+          + "从浏览器 Cookie 中取出 refresh_token 粘贴到下方，再点「提交」。";
+      if (!embedded) openExternal(url);
       return;
     }
     // 手动回调兜底（LobsterAI / CodeArts / TraeWork，R96③/R97/#98）。
@@ -2128,21 +2240,31 @@ async function startOfficeAceWebLogin() {
     const url = r.auth_url;
     if (!url) { toast("无法获取登录链接"); return; }
     $("loginTitle").textContent = "添加 OfficeAce 账号";
-    $("loginMsg").textContent = "已在本设备新标签页打开华为云授权页，请在其中登录并授权；"
-      + "完成后本工具会自动捕获凭据（捕获走云端轮询，与在哪台设备打开无关）。"
-      + "若浏览器拦截了弹窗未打开，可点「复制链接」手动打开。";
+    // 文案必须与「有没有真的打开」一致：嵌入宿主下这里**不自动打开**（见下方 if），
+    // 若照抄桌面端「已在本设备新标签页打开」，用户会盯着一个空白弹层等授权页。
+    $("loginMsg").textContent = isEmbedded()
+      ? "请点「打开网页」在系统浏览器里打开华为云授权页并完成授权；"
+        + "完成后本工具会自动捕获凭据（捕获走云端轮询，与在哪台设备打开无关）。"
+      : "已在本设备新标签页打开华为云授权页，请在其中登录并授权；"
+        + "完成后本工具会自动捕获凭据（捕获走云端轮询，与在哪台设备打开无关）。"
+        + "若浏览器拦截了弹窗未打开，可点「复制链接」手动打开。";
     $("loginOverlay").classList.remove("hidden");
     $("btnCopyUrl").dataset.url = url;
+    $("btnOpenUrl").dataset.url = url;
     if (r.warning) toast(r.warning, 6000);
-    // 在用户当前设备打开授权页（与其它渠道一致）。
-    // 注意：带 noopener 时 window.open 的返回值**恒为 null**（MDN windowFeatures），
+    // 在用户当前设备打开授权页（与其它渠道一致）。嵌入宿主（Android WebView）下
+    // **不自动打开**：WebView 里 window.open 只会静默失败或在 App 内再开一页，
+    // 用户要的是系统浏览器 ⇒ 交给「打开网页」按钮（经 JS 桥转交系统浏览器）。
+    // 桌面端：带 noopener 时 window.open 的返回值**恒为 null**（MDN windowFeatures），
     // 不能拿它判断是否被弹窗拦截（否则每次登录都误报「被拦截」）。故：先开、后断链——
     // 不带 feature 打开才能拿到窗口句柄，随后手动置 opener=null 兼顾安全。
-    const w = window.open(url, "_blank");
-    if (w) {
-      try { w.opener = null; } catch (e) { /* 跨域时可能被拒，忽略 */ }
-    } else {
-      toast("浏览器拦截了弹窗，请点「复制链接」手动打开", 6000);
+    if (!isEmbedded()) {
+      const w = window.open(url, "_blank");
+      if (w) {
+        try { w.opener = null; } catch (e) { /* 跨域时可能被拒，忽略 */ }
+      } else {
+        toast("浏览器拦截了弹窗，请点「复制链接」手动打开", 6000);
+      }
     }
     startOfficeAcePoll();
   } catch (e) {
@@ -2178,6 +2300,15 @@ function stopOfficeAcePoll() {
 function cancelOfficeAceLogin() {
   stopOfficeAcePoll();
   api("/api/login/officeace_auto_cancel", {}).catch(() => {});
+}
+
+// openUrlInBrowser 「打开网页」：在系统浏览器打开本次登录的授权页。
+// 与 copyUrl 共用同一个 dataset.url（由 startLogin / startOfficeAceWebLogin 写入）。
+// 嵌入宿主由 openExternal 走 JS 桥；桌面端就是新开一个标签页。
+function openUrlInBrowser() {
+  const url = $("btnOpenUrl").dataset.url;
+  if (!url) { toast("暂无链接"); return; }
+  openExternal(url);
 }
 
 function copyUrl() {
@@ -2240,10 +2371,21 @@ let glmPoll = null;
 
 function startGLMLogin() {
   $("glmErr").textContent = "";
-  $("glmStatus").textContent = "正在启动浏览器…";
   $("glmManual").classList.add("hidden");
   $("glmAuto").classList.remove("hidden");
   $("glmOverlay").classList.remove("hidden");
+  // 嵌入宿主（Android WebView）没有可拉起的桌面浏览器：glm 自动登录走 cdp.Launch，
+  // 必定失败并回 400。直接展开手工粘贴路径，**不发起**注定失败的请求
+  // （既省一次无谓的上游失败，也不让用户看到「启动失败」的红字）。
+  if (isEmbedded()) {
+    $("glmAuto").classList.add("hidden");
+    $("glmStatus").textContent = "";
+    $("glmErr").textContent = "本应用内嵌浏览器无法拉起独立的桌面浏览器窗口，"
+      + "自动捕获登录态只在电脑版可用。请展开下方「手工方式」粘贴 refresh_token。";
+    $("glmManual").classList.remove("hidden");
+    return;
+  }
+  $("glmStatus").textContent = "正在启动浏览器…";
   api("/api/login/glm_auto", {})
     .then(() => {
       $("glmStatus").textContent = "浏览器已打开，请在其中登录智谱清言…";
@@ -3809,6 +3951,7 @@ function bind() {
     if (ed.contains(t) || t === $("btnAddTime")) return;
     closeTimeEditor();
   });
+  $("btnOpenUrl").onclick = openUrlInBrowser;
   $("btnCopyUrl").onclick = copyUrl;
   $("btnSubmitCallback").onclick = submitCallback;
   $("btnCancelLogin").onclick = cancelLogin;

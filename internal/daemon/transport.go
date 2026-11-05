@@ -1,12 +1,12 @@
 // 出站链路的统一接线：devdump 开发期落盘包装 + 备用上游通道生效。
-// 独立成文件避免 main.go 膨胀。
+// 独立成文件避免 daemon.go 膨胀。
 //
 // **这里不再有渠道代理逻辑**（决议 R57）：旧的「按渠道套代理 Transport」已删除
 // ——启动表 13 个渠道、面板热更新表只 10 个，traecode 两张表都没进（实证静默失效）。
 // 备用上游通道改为**零接线**：地址只存进 internal/backuplink，渠道在命中地区拒绝时
 // 自行取用（当前唯一取用方 cline），因此不存在「漏接线」这种失效形态。
 // 漏项的本表只影响 devdump 落盘范围，由 transport_test.go 静态校验兜住。
-package main
+package daemon
 
 import (
 	"log"

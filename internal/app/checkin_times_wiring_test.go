@@ -12,7 +12,7 @@ import (
 	"testing"
 )
 
-// schedulerConfigBlocks 从 main.go 里抽出每个 scheduler.New(scheduler.Config{...}) 的字面量。
+// schedulerConfigBlocks 从 daemon.go 里抽出每个 scheduler.New(scheduler.Config{...}) 的字面量。
 // 用花括号计数而不是正则：Config 字面量里有 `[]int{...}`，正则的 `[^}]*` 会提前截断。
 func schedulerConfigBlocks(src string) []string {
 	const anchor = "scheduler.New(scheduler.Config{"
@@ -43,9 +43,9 @@ func schedulerConfigBlocks(src string) []string {
 
 // TestMainGoFollowGlobalCheckinWiring 逐块核对标记与签到时刻的一致性。
 func TestMainGoFollowGlobalCheckinWiring(t *testing.T) {
-	mainSrc, err := os.ReadFile("../../cmd/wild-work/main.go")
+	mainSrc, err := os.ReadFile("../../internal/daemon/daemon.go")
 	if err != nil {
-		t.Fatalf("读 main.go 失败: %v", err)
+		t.Fatalf("读 daemon.go 失败: %v", err)
 	}
 	blocks := schedulerConfigBlocks(string(mainSrc))
 	if len(blocks) < 20 {
@@ -116,7 +116,7 @@ func TestMainGoFollowGlobalCheckinWiring(t *testing.T) {
 			}
 		}
 		if !found {
-			t.Errorf("❌ main.go 里找不到 %s 的调度器配置", name)
+			t.Errorf("❌ daemon.go 里找不到 %s 的调度器配置", name)
 		}
 	}
 }

@@ -1,0 +1,37 @@
+// Android 外壳的 Gradle 设置。
+//
+// 只包含一个 app 模块：外壳本身很薄（WebView + 前台服务），Go 侧全部在
+// wildwork.aar 里（由 `gomobile bind` 从仓库根的 mobile 包产出）。
+//
+// 为什么用 Groovy DSL 而不是 Kotlin DSL：这台机器（以及多数只装了命令行 SDK
+// 的环境）没有 gradle wrapper 缓存，Groovy 脚本无需额外编译 Kotlin DSL 脚本，
+// 首次构建更快、报错信息也直白。
+pluginManagement {
+    repositories {
+        // 阿里云镜像放在最前：dl.google.com 在部分网络下会被 DNS 污染成不可达
+        // 的地址（实测解析到 220.181.174.97 后连接一直挂着、构建静默卡死几十分钟），
+        // 而 google()/mavenCentral() 直连在那种网络下永远等不到响应。
+        // 镜像缺失时下面两个官方仓库仍然兜底，不影响正常网络环境。
+        maven { url 'https://maven.aliyun.com/repository/google' }
+        maven { url 'https://maven.aliyun.com/repository/gradle-plugin' }
+        maven { url 'https://maven.aliyun.com/repository/public' }
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories {
+        maven { url 'https://maven.aliyun.com/repository/google' }
+        maven { url 'https://maven.aliyun.com/repository/public' }
+        google()
+        mavenCentral()
+        // wildwork.aar 放在 app/libs，用 flatDir 引用（不进任何远程仓库）
+        flatDir { dirs("${rootDir}/app/libs") }
+    }
+}
+
+rootProject.name = "wildwork"
+include(":app")

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 面板自己带完整样式（cmd 渠道的 Web UI），外壳只负责让出整屏，
+         所以主题尽量素：无 ActionBar，深色底避免加载瞬间白闪。 -->
+    <style name="Theme.WildWork" parent="Theme.AppCompat.NoActionBar">
+        <item name="android:windowBackground">@android:color/black</item>
+        <item name="android:statusBarColor">@android:color/black</item>
+        <item name="android:navigationBarColor">@android:color/black</item>
+    </style>
+</resources>

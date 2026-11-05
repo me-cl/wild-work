@@ -4,7 +4,9 @@ package config
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log"
 	"net"
 	"os"
@@ -22,6 +24,16 @@ import (
 type Listen struct {
 	Host string `json:"host"`
 	Port int    `json:"port"`
+
+	// Ephemeral 表示「端口交给内核分配」（监听 `host:0`）。
+	//
+	// 必须有这个标记：Port 的零值既可能是「配置里没写端口」（应回落 DefaultPort），
+	// 也可能是「显式要求随机端口」（如 `WILDWORK_LISTEN=127.0.0.1:0`）。只看 Port
+	// 无法区分，早先的实现直接把 0 当非法值，导致 Android 外壳写的 `:0`
+	// 在 applyEnv 里被静默丢弃、实际落到固定端口（2026-11-05 发现）。
+	//
+	// json:"-" ⇒ 配置文件里不写这个字段；`"port": 0` 仍按旧语义回落默认端口。
+	Ephemeral bool `json:"-"`
 }
 
 // IsLoopback 是否是「仅本机可访问」的监听地址：环回 IP / localhost / 空主机名
@@ -38,12 +50,15 @@ func (l Listen) IsLoopback() bool {
 	return false
 }
 
-// Addr 返回 net.Listen 使用的地址串，如 "127.0.0.1:7863" / ":7863"。
+// Addr 返回 net.Listen 使用的地址串，如 "127.0.0.1:17863" / ":17863"。
 func (l Listen) Addr() string {
 	host := l.Host
 	port := l.Port
-	if port <= 0 {
-		port = 7863
+	if l.Ephemeral {
+		// 显式要求内核分配端口：保持 0 交给 net.Listen，不要回落默认值。
+		port = 0
+	} else if port <= 0 {
+		port = DefaultPort
 	}
 	if strings.Contains(host, ":") && !strings.HasPrefix(host, "[") {
 		host = "[" + host + "]"
@@ -90,18 +105,25 @@ func ParseListen(s string) (Listen, error) {
 	if i := strings.LastIndex(s, ":"); i >= 0 {
 		host, portStr = s[:i], s[i+1:]
 	} else if n, err := strconv.Atoi(host); err == nil {
-		// 无冒号且整体是数字 → 仅端口（兼容旧配置 "7863"）
-		return Listen{Port: n}, nil
+		// 无冒号且整体是数字 → 仅端口（兼容旧配置 "9999" 这种裸端口写法）。
+		if n < 0 || n > 65535 {
+			return Listen{}, fmt.Errorf("bad listen port %q", host)
+		}
+		return Listen{Port: n, Ephemeral: n == 0}, nil
 	}
 	port := 0
 	if portStr != "" {
 		n, err := strconv.Atoi(portStr)
-		if err != nil || n <= 0 || n > 65535 {
+		// 端口 0 是**合法**写法：交给内核分配空闲端口（Android 壳固定用它，
+		// `WILDWORK_LISTEN=127.0.0.1:0`）。此前把它判成非法，而 applyEnv 会静默
+		// 吞掉解析错误 ⇒ 外壳写的 127.0.0.1:0 从未生效，实际落到 config.json 里
+		// 的固定端口（2026-11-05 发现）。
+		if err != nil || n < 0 || n > 65535 {
 			return Listen{}, fmt.Errorf("bad listen port %q", portStr)
 		}
 		port = n
 	}
-	return Listen{Host: host, Port: port}, nil
+	return Listen{Host: host, Port: port, Ephemeral: port == 0 && portStr != ""}, nil
 }
 
 // Config 顶层配置。
@@ -322,6 +344,17 @@ func ValidAliasName(name string) bool {
 // DefaultStickyMaxRequests 粘性路由的默认轮换阈值。
 const DefaultStickyMaxRequests = 50
 
+// DefaultPort 默认监听端口。
+//
+// 原先用 7863，但那个端口在本机常被其他服务占用（2026-11-05 用户本地即有一份
+// 实例占着 7863，新起的进程会撞 WSAEADDRINUSE 而 R68 要求直接终止进程）。
+// 换到 17863：同属高位非特权端口，避开常见服务号段。
+//
+// ⚠️ 只影响**没有显式配置端口**的场景：已有 config.json 里写了 `listen.port`
+// （或旧字符串 `":7863"`）的实例继续用文件里的值，不做静默迁移——把用户的监听
+// 地址悄悄改掉，比端口冲突更难排查（也违反 R9「config 格式零迁移」）。
+const DefaultPort = 17863
+
 // 临期展示口径（自然日）：面板「积分汇总」的「临期」用几天窗口，
 // 与运行统计的「今日到期 / 明日到期 / 7 日内到期」同源（provider.ExpiringWithinDays）。
 // 只影响**展示**，不参与选号（选号判据只有 provider.EarliestExpire，见 R112/R112b）。
@@ -339,7 +372,7 @@ func IsExpiringDays(days int) bool {
 // Default 默认配置。
 func Default() *Config {
 	c := &Config{
-		Listen:    Listen{Host: "127.0.0.1", Port: 7863},
+		Listen:    Listen{Host: "127.0.0.1", Port: DefaultPort},
 		APIKey:    "WildWorkAPI",
 		AuthDir:   "./auths",
 		StateFile: "./data/state.json",
@@ -392,6 +425,38 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 	return c, nil
+}
+
+// LoadOrCreate 在配置不存在时用默认值建一份并落盘，返回配置与是否新建。
+//
+// 为什么需要它、而不是让调用方自己 `Default()`：**全新安装也必须吃 WILDWORK_*
+// 环境变量**。Android 外壳用 `WILDWORK_LISTEN=127.0.0.1:0` 要求内核分配端口，
+// 首次启动时 config.json 还不存在；若这里直接 `config.Default()`，env 覆盖被整条
+// 跳过，实际监听会落到 config.json 里写下的固定端口——外壳拿到的端口与真实
+// 端口不一致（2026-11-05 实测发现：日志打 127.0.0.1:17863，而期望是随机端口）。
+//
+// 语义与 Load 严格一致：文件**存在**时行为完全相同（含「加载不写盘」这项不变量）；
+// 只有「不存在」这一支多一次 Save（把默认配置落盘），并返回 created=true。
+func LoadOrCreate(path string) (c *Config, created bool, err error) {
+	c, err = Load(path)
+	if err == nil {
+		return c, false, nil
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		return nil, false, err
+	}
+	// 走 Load("") 而不是 Default()：这样 applyEnv + normalize 都会执行，
+	// env（尤其是 WILDWORK_LISTEN）与默认值的优先级跟正常加载完全一致。
+	c, err = Load("")
+	if err != nil {
+		return nil, false, err
+	}
+	if err := Save(c, path); err != nil {
+		// 写盘失败不阻塞启动：配置在内存里是对的，用户可以继续用，只是下次启动
+		// 还会走一遍默认值。调用方据此打日志即可。
+		return c, true, fmt.Errorf("write default config: %w", err)
+	}
+	return c, true, nil
 }
 
 // Save 以 0600 原子写回配置。
@@ -626,8 +691,9 @@ func (c *Config) normalize() error {
 			c.Server.StickyMaxRequests, DefaultStickyMaxRequests)
 		c.Server.StickyMaxRequests = DefaultStickyMaxRequests
 	}
-	if c.Listen.Port <= 0 {
-		c.Listen.Port = 7863
+	// 端口回落只在「没要求随机端口」时做；Ephemeral（显式 :0）保持 0。
+	if c.Listen.Port <= 0 && !c.Listen.Ephemeral {
+		c.Listen.Port = DefaultPort
 	}
 	c.AdminPass = strings.TrimSpace(c.AdminPass)
 	// 备用上游通道：先把旧 `proxies` 段一次性迁移（决议 R57），再校验现值。

@@ -4,6 +4,13 @@
 // 设计约定（见项目 AGENTS.md R1-R3）：
 //   - 菜单固定，不做动态内容，不用定时/事件刷新
 //   - 单击/双击托盘 = 打开主界面
+//
+// Android 例外：GOOS=android 会让 `//go:build linux` 成立，energye/systray 的
+// DBus 实现能编过，但 Android 没有会话 bus ⇒ 运行期必然失败；且 Android 客户端
+// 需要的是一个能被 gomobile 泛型化的包（energye 会拖进 cgo 路径）。故整包按
+// build tag 切成两半，Android 用 systray_android.go 的同名空实现。
+//go:build !android
+
 package systray
 
 import (

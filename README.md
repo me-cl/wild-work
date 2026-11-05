@@ -130,7 +130,7 @@
 wild-work 的 `/v1/models` 端点返回当前所有可用模型。在终端中执行：
 
 ```bash
-curl -s -H "Authorization: Bearer WildWorkAPI" http://127.0.0.1:7863/v1/models
+curl -s -H "Authorization: Bearer WildWorkAPI" http://127.0.0.1:17863/v1/models
 ```
 
 ### 2. 配置 Pi（models.json）
@@ -143,7 +143,7 @@ Pi 不支持自动拉取模型列表，需要手动编辑 `~/.pi/agent/models.js
     "wild-work": {
       "name": "wild-work",
       "api": "openai-completions",
-      "baseUrl": "http://127.0.0.1:7863/v1",
+      "baseUrl": "http://127.0.0.1:17863/v1",
       "apiKey": "WildWorkAPI",
       "models": [
         {
@@ -225,7 +225,7 @@ Pi 不支持自动拉取模型列表，需要手动编辑 `~/.pi/agent/models.js
 支持 OpenAI 兼容 API 的客户端均可接入：
 
 ```
-Base URL: http://127.0.0.1:7863/v1
+Base URL: http://127.0.0.1:17863/v1
 API Key:  WildWorkAPI
 ```
 
@@ -241,7 +241,7 @@ API Key:  WildWorkAPI
 3. 面板「账号管理」→「＋ Cline」→ 粘贴 Key → 添加。
 
 ```bash
-curl http://127.0.0.1:7863/v1/chat/completions \
+curl http://127.0.0.1:17863/v1/chat/completions \
   -H "Authorization: Bearer WildWorkAPI" -H "Content-Type: application/json" \
   -d '{"model":"cline-free/step-5-preview","messages":[{"role":"user","content":"你好"}]}'
 ```
@@ -270,7 +270,7 @@ curl http://127.0.0.1:7863/v1/chat/completions \
 无需任何账号或登录，直接可用（免费清单由上游动态下发，随时增删）：
 
 ```bash
-curl http://127.0.0.1:7863/v1/chat/completions \
+curl http://127.0.0.1:17863/v1/chat/completions \
   -H "Authorization: Bearer WildWorkAPI" -H "Content-Type: application/json" \
   -d '{"model":"oczen/mimo-v2.6-flash-free","messages":[{"role":"user","content":"你好"}]}'
 ```
@@ -350,7 +350,7 @@ model_provider = "wildwork"
 
 [model_providers.wildwork]
 name = "wildwork"
-base_url = "http://127.0.0.1:7863/v1"
+base_url = "http://127.0.0.1:17863/v1"
 wire_api = "responses"
 env_key = "WILDWORK_KEY"
 ```
@@ -358,7 +358,7 @@ env_key = "WILDWORK_KEY"
 **Claude Code 配置示例**（环境变量）：
 
 ```bash
-export ANTHROPIC_BASE_URL="http://127.0.0.1:7863"
+export ANTHROPIC_BASE_URL="http://127.0.0.1:17863"
 export ANTHROPIC_AUTH_TOKEN="WildWorkAPI"
 export ANTHROPIC_MODEL="traework/glm-5.2"
 ```
@@ -392,7 +392,7 @@ export ANTHROPIC_MODEL="traework/glm-5.2"
 #### 文生图
 
 ```bash
-curl -X POST "http://127.0.0.1:7863/v1/images/generations" \
+curl -X POST "http://127.0.0.1:17863/v1/images/generations" \
   -H "Authorization: Bearer WildWorkAPI" \
   -H "Content-Type: application/json" \
   -d '{
@@ -419,7 +419,7 @@ curl -X POST "http://127.0.0.1:7863/v1/images/generations" \
 - **JSON**：`{"prompt": "…", "image": ["https://… | data:image/png;base64,…"]}`。
 
 ```bash
-curl -X POST "http://127.0.0.1:7863/v1/images/edits" \
+curl -X POST "http://127.0.0.1:17863/v1/images/edits" \
   -H "Authorization: Bearer WildWorkAPI" \
   -F "prompt=给这个角色换上红色围巾，保持立绘风格" \
   -F "image=@./character.webp" \
@@ -445,7 +445,7 @@ OpenCode Zen 上还有一个免费的结构化决策模型 **Jev（`jev-1.13-fre
 本网关在 `POST /v1/systemone` 直接透传，用法：
 
 ```bash
-curl -X POST "http://127.0.0.1:7863/v1/systemone" \
+curl -X POST "http://127.0.0.1:17863/v1/systemone" \
   -H "Authorization: Bearer WildWorkAPI" \
   -H "Content-Type: application/json" \
   -d '{
@@ -587,7 +587,7 @@ curl -X POST "http://127.0.0.1:7863/v1/systemone" \
 ### 3. 如何绑定多个 WorkBuddy 国际版账号？
 
 添加新账号时，因为默认使用当前已登录的 github/Google 等账号自动登录，因此无法快速添加新的账号。
-这里给出我的方案，在浏览器右上角菜单选择“新建无痕窗口”，在窗口地址栏输入`http://127.0.0.1:7863`打开 WildWork 主界面，即可在干净环境内新增账号。
+这里给出我的方案，在浏览器右上角菜单选择“新建无痕窗口”，在窗口地址栏输入`http://127.0.0.1:17863`打开 WildWork 主界面，即可在干净环境内新增账号。
 也可以打开开发者控制台，单独清除 github.com 和 workbuddy.ai 的 Cookies。
 
 ### 4. WorkBuddy 国际版登录后积分显示为0，刷新积分报错

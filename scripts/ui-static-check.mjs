@@ -8,7 +8,7 @@
 // 用法：node ui-static-check.mjs
 import { readFileSync } from "node:fs";
 
-const raw = readFileSync(new URL("../cmd/wild-work/web/app.js", import.meta.url), "utf8");
+const raw = readFileSync(new URL("../internal/webui/web/app.js", import.meta.url), "utf8");
 
 // 把 `let state = null;` 改成假数据，并暴露待测函数（app.js 是脚本，函数是顶层声明）。
 const FAKE_STATE = {
@@ -336,7 +336,7 @@ check("重新登录入口的 title 点明缺 refresh_token 场景",
 // 抓到的死按钮就是这个。这条断言把「卡片 ⟳ → startLogin → 分派到 OfficeAce 专属入口」
 // 这段接线锁住（真正的端到端对齐在 Go 侧 TestReloginChannelSetMatchesBackend）。
 {
-  const appSrc = readFileSync(new URL("../cmd/wild-work/web/app.js", import.meta.url), "utf8");
+  const appSrc = readFileSync(new URL("../internal/webui/web/app.js", import.meta.url), "utf8");
   check("startLogin 对 officeace 分派到专属入口（防死按钮复发）",
     /if \(channel === "officeace"\) return startOfficeAceWebLogin\(\);/.test(appSrc));
   check("OfficeAce 专属入口打的是 officeace_auto 端点（而非 /api/login/start）",
@@ -498,7 +498,7 @@ check("非 officeace 账号不带「缺续期凭据」（渠道限定，避免�
   check("展开选择持久化到 localStorage", raw.includes("localStorage.setItem(SHOW_NA_KEY"));
   check("全部被收起时给出可执行提示（不留空白页）",
     /id="acctHiddenTip"/.test(
-      readFileSync(new URL("../cmd/wild-work/web/index.html", import.meta.url), "utf8"))
+      readFileSync(new URL("../internal/webui/web/index.html", import.meta.url), "utf8"))
     && raw.includes('$("acctHiddenTip")'));
 
   // 复原，避免影响后续场景的汇总条断言。
@@ -537,7 +537,7 @@ check("临期判据为「今天算第 1 天」（todayUtc + (expDays-1) 天，R1
 check("临期判据不得保留旧口径（todayUtc + expDays*24h）",
   !/todayUtc \+ expDays \* 24 \* 3600 \* 1000/.test(raw));
 // ③ 三处名字一致：index.html 的 selExpiring、state.expiring_days、端点 /api/config/expiring_days
-const idxHtml2 = readFileSync(new URL("../cmd/wild-work/web/index.html", import.meta.url), "utf8");
+const idxHtml2 = readFileSync(new URL("../internal/webui/web/index.html", import.meta.url), "utf8");
 check("设置里有临期口径下拉框（三选项 1/2/7）",
   /id="selExpiring"/.test(idxHtml2) &&
   /<option value="1">1 日/.test(idxHtml2) &&
@@ -666,7 +666,7 @@ const FAKE_STATS = {
 };
 
 T.renderStats(FAKE_STATS);
-const htmlEarly = readFileSync(new URL("../cmd/wild-work/web/index.html", import.meta.url), "utf8");
+const htmlEarly = readFileSync(new URL("../internal/webui/web/index.html", import.meta.url), "utf8");
 check("汇总横条已删（容器与渲染函数都不存在，信息由合计行承接）",
   !raw.includes("function stSumItem") && !raw.includes('$("stSum")') && !/id="stSum"/.test(htmlEarly));
 check("合计行消耗列带精确小注（承接旧汇总条唯一独有信息）",
@@ -792,7 +792,7 @@ globalThis.__DedupT([{ id: "2026-10-06-m1", title: "里程碑", body: "100分" }
 check("里程碑 toast 同 id 去重（只写一次已读标记）", toastWrites === 1, `实际写入 ${toastWrites} 次`);
 
 // ---- 静态结构断言：index.html / style.css 的 stats 骨架 ----
-const html = readFileSync(new URL("../cmd/wild-work/web/index.html", import.meta.url), "utf8");
+const html = readFileSync(new URL("../internal/webui/web/index.html", import.meta.url), "utf8");
 check('第三个 tab 按钮存在（data-mtab="stats"）', /data-mtab="stats"/.test(html));
 check("#mtabStats body 存在且默认隐藏", /class="mtab-body hidden" id="mtabStats"/.test(html));
 check("运行统计区块骨架存在（stPlat/stApplog）", /id="stPlat"/.test(html) && /id="stApplog"/.test(html));
@@ -802,7 +802,7 @@ check('第四个 tab 按钮存在（data-mtab="fees"）', /data-mtab="fees"/.tes
 check("#mtabFees body 存在且默认隐藏", /class="mtab-body hidden" id="mtabFees"/.test(html));
 check("模型费率区块骨架存在（feesBox/btnRefreshFees）", /id="feesBox"/.test(html) && /id="btnRefreshFees"/.test(html));
 check("模型费率区块在 section 内（不再是独立 section）", /<div class="mtab-body hidden" id="mtabFees">[\s\S]*?<\/section>/.test(html) && !/<!-- 模型列表和费率 -->\s*<section class="panel">/.test(html));
-const css = readFileSync(new URL("../cmd/wild-work/web/style.css", import.meta.url), "utf8");
+const css = readFileSync(new URL("../internal/webui/web/style.css", import.meta.url), "utf8");
 check("style.css 含运行统计样式段（#mtabStats .st-plat-row 等）", /#mtabStats \.st-token/.test(css) && /#mtabStats \.st-plat-row/.test(css));
 // ---- Token 多天行单行：不许回退成 wrap（wrap 会在内容长度临界时抖动换行）----
 check("Token 多天行 st-token 单行不折行（nowrap，极窄整条截尾）",
@@ -879,7 +879,7 @@ const regexOk = (re) => re.test(raw);
 // 而是换一条与部署环境无关的登录路径：服务端申请二维码（扫码），外加可选的
 // 「接管本机浏览器」（用户自己开调试端口时才有）。
 {
-  const html = readFileSync(new URL("../cmd/wild-work/web/index.html", import.meta.url), "utf8");
+  const html = readFileSync(new URL("../internal/webui/web/index.html", import.meta.url), "utf8");
   check("弹层带扫码区（服务端申请二维码）", html.includes('id="comateQrImg"') && html.includes('id="btnComateQrStart"'));
   check("弹层带「用本机浏览器登录」区（默认隐藏，由能力探测决定是否显示）",
     html.includes('id="comateBrowser"') && /<div class="cfg-section hidden" id="comateBrowser"/.test(html));
@@ -941,8 +941,8 @@ for (const [label, re] of uniq) {
 // 漏了不报错，只表现为「渠道能选到但没入口」或「弹层弹出来但点没反应」——
 // 与 R34/R41 同族的「声明了却没接线」，故在此静态锁住。
 {
-  const html = readFileSync(new URL("../cmd/wild-work/web/index.html", import.meta.url), "utf8");
-  const css = readFileSync(new URL("../cmd/wild-work/web/style.css", import.meta.url), "utf8");
+  const html = readFileSync(new URL("../internal/webui/web/index.html", import.meta.url), "utf8");
+  const css = readFileSync(new URL("../internal/webui/web/style.css", import.meta.url), "utf8");
   const need = [
     ["index.html 有 Cline 添加按钮", html.includes('id="btnAddCline"')],
     ["index.html 有 API Key 粘贴弹层", html.includes('id="clineOverlay"')],
@@ -1002,9 +1002,10 @@ for (const [label, re] of uniq) {
       !/NO_EXPLICIT_CHECKIN[^)]*"loomy"/.test(raw)],
     ["loomy 在网页版登录集合里（否则「＋Loomy」不弹登录框）",
       /WEB_LOGIN_CHANNELS = new Set\(\[[^\]]*"loomy"/.test(raw)],
-    // Loomy 与 raccoon 相反：后端不拉浏览器，必须由前端 window.open 打开引导页。
-    ["loomy 的登录分支有 window.open（否则引导页打不开）",
-      /channel === "loomy"[\s\S]{0,600}?window\.open\(url/.test(raw)],
+    // Loomy 与 raccoon 相反：后端不拉浏览器，必须由前端打开引导页
+    //（桌面端走 openExternal → window.open；嵌入宿主改由「打开网页」按钮触发）。
+    ["loomy 的登录分支会打开引导页（否则打不开）",
+      /channel === "loomy"[\s\S]{0,900}?openExternal\(url\)/.test(raw)],
     ["loomy 的弹窗文案不再套用「互踢/自动续期」（Loomy 无 refresh 端点）",
       (() => {
         // 只检查**用户可见的文案**（lcMsg 赋值段），并先剥掉注释 ——
@@ -1064,8 +1065,8 @@ for (const [label, re] of uniq) {
 // 与 R34/R41 同族：这两处都是「改了交互/样式但没接线/被后写规则覆盖」就静默失效，
 // 且宽度断点一旦被人调大就会重新弄坏桌面端（本次就是靠像素级 diff 才发现过一次），故在此锁死。
 {
-  const html = readFileSync(new URL("../cmd/wild-work/web/index.html", import.meta.url), "utf8");
-  const css = readFileSync(new URL("../cmd/wild-work/web/style.css", import.meta.url), "utf8");
+  const html = readFileSync(new URL("../internal/webui/web/index.html", import.meta.url), "utf8");
+  const css = readFileSync(new URL("../internal/webui/web/style.css", import.meta.url), "utf8");
   const need = [
     // 积分明细：点击式。hover 版在「浮窗开着时后台 loadState() 重建卡片 DOM」会让
     // mouseleave 不再派发，浮窗永久残留（用户反馈的「经常不能自动关闭」），触屏更是关不掉。
@@ -1133,7 +1134,7 @@ for (const [label, re] of uniq) {
 // 与 R34/R41 同族：「后端有端点、面板没接线」不报错不崩溃，只表现为
 // 配不了降级链 / 配了不生效，故把接线与渲染一并锁死。
 {
-  const html = readFileSync(new URL("../cmd/wild-work/web/index.html", import.meta.url), "utf8");
+  const html = readFileSync(new URL("../internal/webui/web/index.html", import.meta.url), "utf8");
   T.renderFallbacks([
     { from: "workbuddyai/deepseek-v4.1-flash", to: "workbuddy/glm-5.2", at: "09:12:03", at_unix: 1760000000, active: true },
     { from: "oczen/big-pickle", to: "workbuddy/glm-free", at: "08:01:00", at_unix: 1759990000, recovered: "08:05:12", dur_sec: 252, active: false },
@@ -1166,7 +1167,7 @@ for (const [label, re] of uniq) {
 // ---- 降级链别名（R129）：head 行内输入框 + 只读 chip + 复制 + ? 说明 + 前端校验 ----
 // 与上面同族：别名是「后端有字段、面板没接线」就完全不生效的功能，故把接线一并锁死。
 {
-  const html = readFileSync(new URL("../cmd/wild-work/web/index.html", import.meta.url), "utf8");
+  const html = readFileSync(new URL("../internal/webui/web/index.html", import.meta.url), "utf8");
   const need = [
     // 输入框必须在规则 head 行内（不额外占一行）——渲染模板里 .fb-rule-head 内出现 fb-name-edit
     ["别名输入框渲染在规则 head 行内（不额外占行）",
@@ -1225,7 +1226,7 @@ for (const [label, re] of uniq) {
 // 与降级链同族：「后端有端点、面板没接线」不报错不崩溃，只表现为配不了
 // 档位 / 配了不生效，故把编辑区、建议集与接线一并锁死。
 {
-  const html = readFileSync(new URL("../cmd/wild-work/web/index.html", import.meta.url), "utf8");
+  const html = readFileSync(new URL("../internal/webui/web/index.html", import.meta.url), "utf8");
   const need = [
     ["设置弹层有思考强度编辑区（全局默认行 + 映射列表 + 输入行）",
       html.includes('id="effGlobalInput"') && html.includes('id="effList"') && html.includes('id="effModelInput"') && html.includes('id="effEffortInput"') && html.includes('id="btnEffAdd"') && html.includes('id="btnEffSave"')],
@@ -1251,7 +1252,7 @@ for (const [label, re] of uniq) {
     ["renderEffList 模型 ID 列可伸缩不被定宽压掉",
       /class="fb-map-model" title=/.test(raw)
       && /\.fb-map-card \.fb-map-model \{[^}]*flex: 1 1 200px/.test(
-        readFileSync(new URL("../cmd/wild-work/web/style.css", import.meta.url), "utf8"))],
+        readFileSync(new URL("../internal/webui/web/style.css", import.meta.url), "utf8"))],
   ];
   for (const [label, pass] of need) {
     console.log(`  ${pass ? "✅" : "❌"} ${label}`);
@@ -1262,8 +1263,8 @@ for (const [label, re] of uniq) {
 // ---- 设置弹层内的模型查找入口（模型降级链 / 思考强度标题右侧）----
 // 与 R34/R41 同族：「按钮存在但没接线」不报错，只表现为点了没反应，故静态锁住。
 {
-  const html = readFileSync(new URL("../cmd/wild-work/web/index.html", import.meta.url), "utf8");
-  const css = readFileSync(new URL("../cmd/wild-work/web/style.css", import.meta.url), "utf8");
+  const html = readFileSync(new URL("../internal/webui/web/index.html", import.meta.url), "utf8");
+  const css = readFileSync(new URL("../internal/webui/web/style.css", import.meta.url), "utf8");
   const need = [
     ["两处 cfg-heading 各带一个 data-model-search 查找按钮",
       (html.match(/data-model-search/g) || []).length === 2],
@@ -1290,8 +1291,8 @@ for (const [label, re] of uniq) {
 
 // ---- 自定义渠道（R66）：设置面板接线与样式 ----
 {
-  const html = readFileSync(new URL("../cmd/wild-work/web/index.html", import.meta.url), "utf8");
-  const css = readFileSync(new URL("../cmd/wild-work/web/style.css", import.meta.url), "utf8");
+  const html = readFileSync(new URL("../internal/webui/web/index.html", import.meta.url), "utf8");
+  const css = readFileSync(new URL("../internal/webui/web/style.css", import.meta.url), "utf8");
   const need = [
     ["自定义模型是独立弹层（R85：设置里只留一个入口按钮）",
       html.includes('id="customModelsOverlay"') && html.includes('id="customChList"') &&
@@ -1363,7 +1364,7 @@ for (const [label, re] of uniq) {
 // admin_password 却看不到登录弹层、点任何按钮无反应，而 JS/后端全都正常（零报错零崩溃）。
 // 与 R34/R41 同族「声明了却没接线」，只是这次是 HTML 结构层面的静默失效，故静态锁住。
 {
-  const html = readFileSync(new URL("../cmd/wild-work/web/index.html", import.meta.url), "utf8");
+  const html = readFileSync(new URL("../internal/webui/web/index.html", import.meta.url), "utf8");
   const opens = (html.match(/<div\b/g) || []).length;
   const closes = (html.match(/<\/div>/g) || []).length;
   // 从任一 overlay 起点按花括号/标签配平找到它的匹配 </div>（返回闭合处的下标，找不到返回 -1）。
@@ -1528,7 +1529,7 @@ for (const [label, re] of uniq) {
   check3("空明细提示函数存在（renderCreditTipNotice）", /function renderCreditTipNotice\(/.test(raw));
   check3("showCreditDetail 空 items 分支也给出提示（不再静默）",
     /if \(!d \|\| !d\.items \|\| !d\.items\.length\) \{\s*renderCreditTipNotice\(/.test(raw));
-  check3(".detail-empty 有样式（提示条可读）", readFileSync(new URL("../cmd/wild-work/web/style.css", import.meta.url), "utf8").includes(".credit-tip .detail-empty"));
+  check3(".detail-empty 有样式（提示条可读）", readFileSync(new URL("../internal/webui/web/style.css", import.meta.url), "utf8").includes(".credit-tip .detail-empty"));
 
   for (const [label, pass, extra] of need3) {
     console.log(`  ${pass ? "✅" : "❌"} ${label}${!pass && extra ? `  ← ${extra}` : ""}`);
@@ -2188,6 +2189,121 @@ for (const [label, re] of uniq) {
   }
 
   for (const [label, pass, extra] of needPal) {
+    console.log(`  ${pass ? "✅" : "❌"} ${label}${!pass && extra ? `  ← ${extra}` : ""}`);
+    if (!pass) failed++;
+  }
+}
+
+// ---- 嵌入宿主（Android WebView）下的登录流程（2026-11-05）----
+// 背景：手机上「登录某个平台」会在 App 内自动打开网页并报错。两条独立成因：
+//   ① 后端 cdp.Launch 拉桌面浏览器（raccoon/lingxi/glm/officeace）—— Android 上没有
+//      Edge/Chrome 可执行文件，接口直接 400「未找到 Edge/Chrome」；
+//   ② 前端 window.open(url, "_blank") —— WebView 默认静默丢弃 target=_blank，
+//      即便打开也只是 App 内再开一页，用户拿不到手机浏览器里的登录态/短信/扫码。
+// 修法是「后端下发 embedded 信号 + 前端嵌入时一律不自动打开 + 新增『打开网页』按钮
+// 经 JS 桥转交系统浏览器 + 复制链接永远兜底」。这几处任何一处回退都不会报编译错，
+// 只会表现为手机上「点登录没反应 / 弹红字」，故在此静态锁住。
+{
+  const needEmb = [];
+  const checkEmb = (label, pass, extra = "") => needEmb.push([label, pass, extra]);
+
+  // ① 判据必须来自后端字段（不是 UA 嗅探：UA 会被用户/系统改写，且前端无从知道
+  //    自己是不是被嵌入装配的）。Go 侧三处都要有：State 定义、GetState 赋值、壳装配。
+  {
+    const appGo = readFileSync(new URL("../internal/app/app.go", import.meta.url), "utf8");
+    const mobileGo = (() => {
+      try { return readFileSync(new URL("../mobile/mobile.go", import.meta.url), "utf8"); }
+      catch (e) { return ""; }
+    })();
+    checkEmb("后端 /api/state 下发 embedded（State 有 json:\"embedded\" 字段）",
+      /Embedded bool `json:"embedded"`/.test(appGo));
+    checkEmb("GetState 真的填了 Embedded（漏赋值 ⇒ 前端恒判桌面端，修复全部失效）",
+      /Embedded:\s*a\.embedded,/.test(appGo));
+    checkEmb("Android 壳装配时置 Embedded: true（否则后端仍按桌面端跑 CDP）",
+      /Embedded:\s*true,/.test(mobileGo), "mobile/mobile.go 缺 Embedded: true");
+  }
+
+  // ② 前端判据与转发口：openExternal 必须**优先**走 JS 桥，退回 window.open。
+  checkEmb("isEmbedded 读 state.embedded（唯一判据来源）",
+    /const isEmbedded = \(\) => !!\(state && state\.embedded\)/.test(raw));
+  checkEmb("openExternal 优先调 window.WildWorkHost.openExternal（嵌入宿主的系统浏览器通道）",
+    /function openExternal\(url\)[\s\S]{0,400}?window\.WildWorkHost[\s\S]{0,200}?host\.openExternal\(String\(url\)\)/.test(raw));
+  checkEmb("openExternal 拿不到桥时退回 window.open（桌面/旧壳不退化）",
+    /function openExternal\(url\)[\s\S]{0,700}?window\.open\(url, "_blank"/.test(raw));
+
+  // ③ 「打开网页」按钮必须存在、与「复制链接」并列，并且有接线。
+  checkEmb("登录弹层有「打开网页」按钮（与「复制链接」并列）",
+    html.includes('id="btnOpenUrl"') && html.includes('id="btnCopyUrl"') &&
+    html.indexOf('id="btnOpenUrl"') < html.indexOf('id="btnCopyUrl"'));
+  checkEmb("「打开网页」经 openUrlInBrowser → openExternal（不自己拼 window.open）",
+    /function openUrlInBrowser\(\)[\s\S]{0,300}?openExternal\(url\)/.test(raw));
+  checkEmb("「打开网页」在 bind() 里接线（漏接 ⇒ 按钮点了没反应）",
+    /\$\("btnOpenUrl"\)\.onclick = openUrlInBrowser;/.test(raw));
+
+  // ④ 自动打开必须被 !embedded 挡住。startLogin 是「所有非 officeace 渠道」的公共入口，
+  //    它内部共有 3 处 openExternal(url)（loomy / 网页版 / 通用 / needs_poll=false 分支），
+  //    逐个断言「前面紧跟 !embedded」，任何一处漏守卫都会在手机上静默失败。
+  {
+    const at = raw.indexOf("async function startLogin(");
+    const endAt = raw.indexOf("// ---- OfficeAce 自助登录", at);
+    const body = at >= 0 && endAt > at ? raw.slice(at, endAt) : "";
+    const calls = (body.match(/openExternal\(url\)/g) || []).length;
+    const guarded = (body.match(/if \(!embedded\) openExternal\(url\)/g) || []).length;
+    checkEmb("startLogin 里每一处自动打开都有 !embedded 守卫",
+      body.length > 0 && calls > 0 && calls === guarded,
+      `openExternal=${calls} 守卫=${guarded}`);
+    checkEmb("嵌入宿主下 raccoon/lingxi 改道粘贴/导入入口（不再白打一次注定失败的 /api/login/start）", (() => {
+      const shortAt = body.indexOf('if (isEmbedded() && (channel === "raccoon" || channel === "lingxi"))');
+      const apiAt = body.indexOf('api("/api/login/start"');
+      return shortAt >= 0 && apiAt > shortAt && /openLingxiPaste\(\)/.test(body) && /importLocal\("raccoon"\)/.test(body);
+    })());
+  }
+
+  // ⑤ glm 自动登录走 cdp.Launch，嵌入时必须**在发请求之前**改走手工粘贴。
+  {
+    const at = raw.indexOf("function startGLMLogin(");
+    const endAt = raw.indexOf("// ----", at + 10);
+    const body = at >= 0 ? raw.slice(at, endAt > at ? endAt : at + 3000) : "";
+    const embAt = body.indexOf("if (isEmbedded())");
+    const apiAt = body.indexOf('api("/api/login/glm_auto"');
+    checkEmb("startGLMLogin 嵌入时在发请求之前 return（不发起注定 400 的 glm_auto）",
+      embAt >= 0 && apiAt > embAt);
+    checkEmb("startGLMLogin 嵌入时展开手工粘贴路径（否则用户无路可走）",
+      /if \(isEmbedded\(\)\)[\s\S]{0,500}?\$\("glmManual"\)\.classList\.remove\("hidden"\)/.test(body));
+  }
+
+  // ⑥ 网页版登录渠道的引导弹层：嵌入时改文案 + 经 pendingAction 分派，
+  //    **不得**改写 btnLoginConfirm.onclick（bind() 只装一次，改写会串到后续渠道）。
+  {
+    const at = raw.indexOf('if (hasWebLogin(channel) && isEmbedded())');
+    const endAt = raw.indexOf('if (hasWebLogin(channel)) {', at);
+    const body = at >= 0 && endAt > at ? raw.slice(at, endAt) : "";
+    checkEmb("网页版渠道在嵌入宿主下有独立引导分支（拷/开链接 + 手工方式说明）",
+      body.length > 0 && /无桌面环境说明/.test(body));
+    checkEmb("该分支用 pendingAction 分派（不改写 btnLoginConfirm.onclick，避免串台）",
+      body.length > 0 && /pendingAction = "paste_lingxi"/.test(body) &&
+      /pendingAction = "import"/.test(body) && !/btnLoginConfirm"\)\.onclick\s*=/.test(body));
+  }
+
+  // ⑦ 壳侧接线：注入 JS 桥 + 外链转交系统浏览器。只有前端改了、壳没改的话
+  //    openExternal 会静默退回 window.open，等于没修。
+  {
+    const ktDir = new URL("../shell/android/app/src/main/java/com/wildwork/app/", import.meta.url);
+    const readKt = (n) => { try { return readFileSync(new URL(n, ktDir), "utf8"); } catch (e) { return ""; } };
+    const act = readKt("MainActivity.kt");
+    const host = readKt("WildWorkHost.kt");
+    checkEmb("MainActivity 注入了 window.WildWorkHost（否则 openExternal 拿不到桥）",
+      /addJavascriptInterface\(WildWorkHost\(/.test(act) && act.includes('"WildWorkHost"'));
+    checkEmb("MainActivity 用 shouldOverrideUrlLoading 把站外链接交给系统浏览器",
+      /shouldOverrideUrlLoading/.test(act) && /Intent\.ACTION_VIEW/.test(act));
+    checkEmb("面板自身的 URL 仍留在 WebView 里（否则面板内每次跳转都被丢去浏览器）",
+      /private fun isPanelUrl\(/.test(act) && /isPanelUrl\(target\)/.test(act));
+    checkEmb("JS 桥只放行 http(s)（绝不放 file:// / content:// / intent://）",
+      /scheme != "http" && scheme != "https"/.test(host));
+  }
+
+  console.log("--- 嵌入宿主（Android）登录流程 ---");
+  for (const [label, pass, extra] of needEmb) {
     console.log(`  ${pass ? "✅" : "❌"} ${label}${!pass && extra ? `  ← ${extra}` : ""}`);
     if (!pass) failed++;
   }

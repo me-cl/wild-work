@@ -25,15 +25,15 @@ import (
 // TestManualCallbackKindWhitelist 需要人工通道的渠道必须为 true，其余必须为 false。
 func TestManualCallbackKindWhitelist(t *testing.T) {
 	want := map[provider.Kind]bool{
-		provider.CodeArts:   true, // portal 只接受 port 参数，跳转目标写死回环
-		provider.LobsterAI:  true, // redirect_uri 回环 + 回调口绝不监听非环回
-		provider.TraeWork:   true, // 回调写死 127.0.0.1 随机端口 + 5 分钟监听寿命（issue #98）
-		provider.QwenWork:   true, // PKCE(Hydra) 回环回调，redirect_uri 白名单制不可改
-		provider.Gemini:     true, // installed-app 政策限 redirect host 为 localhost，不可改
-		provider.GLM:        false, // 网关侧 CDP 捕获
-		provider.Raccoon:    false, // 网关侧 CDP 捕获
-		provider.OfficeAce:  false, // 云端轮询捕获
-		provider.Loomy:      false, // 本机登录引导页（用户直接在上面填手机号验证码）
+		provider.CodeArts:  true,  // portal 只接受 port 参数，跳转目标写死回环
+		provider.LobsterAI: true,  // redirect_uri 回环 + 回调口绝不监听非环回
+		provider.TraeWork:  true,  // 回调写死 127.0.0.1 随机端口 + 5 分钟监听寿命（issue #98）
+		provider.QwenWork:  true,  // PKCE(Hydra) 回环回调，redirect_uri 白名单制不可改
+		provider.Gemini:    true,  // installed-app 政策限 redirect host 为 localhost，不可改
+		provider.GLM:       false, // 网关侧 CDP 捕获
+		provider.Raccoon:   false, // 网关侧 CDP 捕获
+		provider.OfficeAce: false, // 云端轮询捕获
+		provider.Loomy:     false, // 本机登录引导页（用户直接在上面填手机号验证码）
 	}
 	for kind, exp := range want {
 		if got := manualCallbackKind(kind); got != exp {

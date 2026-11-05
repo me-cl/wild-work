@@ -112,7 +112,7 @@ var builtinKindList = []Kind{
 
 // DisplayNames 渠道**显示名**的 Go 侧真源（面板文案、`/v1/models` 之外的展示处同源）。
 //
-// 前端 `cmd/wild-work/web/app.js` 的 CH_LABEL 是同一份数据的 JS 侧副本 ——
+// 前端 `internal/webui/web/app.js` 的 CH_LABEL 是同一份数据的 JS 侧副本 ——
 // 两份必须逐项一致，`scripts/ui-static-check.mjs` 有跨语言一致性断言（Go 源它直接读）。
 // 顺序无关（展示序由 ChannelDisplayOrder 按值排序派生）。
 var DisplayNames = map[Kind]string{

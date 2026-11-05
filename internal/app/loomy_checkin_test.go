@@ -53,7 +53,7 @@ func TestLoomyCheckinWiring(t *testing.T) {
 	}
 
 	// ③ 前端名单：NO_EXPLICIT_CHECKIN 不得再包含 "loomy"。
-	js, err := os.ReadFile("../../cmd/wild-work/web/app.js")
+	js, err := os.ReadFile("../../internal/webui/web/app.js")
 	if err != nil {
 		t.Fatalf("读 app.js 失败: %v", err)
 	}
@@ -63,9 +63,9 @@ func TestLoomyCheckinWiring(t *testing.T) {
 
 	// ④ 定时签到必须真的被打开（R39：传显式空切片 = 本渠道无此类任务）。
 	//    只加渠道实现而不配调度器，是最隐蔽的一种「功能没生效」。
-	mainSrc, err := os.ReadFile("../../cmd/wild-work/main.go")
+	mainSrc, err := os.ReadFile("../../internal/daemon/daemon.go")
 	if err != nil {
-		t.Fatalf("读 main.go 失败: %v", err)
+		t.Fatalf("读 daemon.go 失败: %v", err)
 	}
 	main := string(mainSrc)
 	for _, tc := range []struct {

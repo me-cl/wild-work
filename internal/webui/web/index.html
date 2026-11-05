@@ -210,7 +210,12 @@
     <div class="modal-title" id="loginTitle">添加账号</div>
     <div class="modal-body">
       <div id="loginMsg">请在浏览器新窗口中完成登录…</div>
+      <!-- 「打开网页」与「复制链接」并列：嵌入宿主（Android WebView）里页面不能自己
+           开系统浏览器，必须由用户点一下、经 JS 桥（window.WildWorkHost.openExternal）
+           转交外壳；桌面端等同新开一个标签页。复制链接永远保留作兜底
+           （WebView/浏览器可能拦截弹窗）。 -->
       <div class="login-buttons">
+        <button class="btn small" id="btnOpenUrl">打开网页</button>
         <button class="btn small" id="btnCopyUrl">复制链接</button>
         <button class="btn small danger" id="btnCancelLogin">取消</button>
       </div>
@@ -806,7 +811,8 @@
     <div class="modal-title">配置说明</div>
     <div class="modal-body docs">
       <p>1. 添加账号后自动完成登录（WorkBuddy 国际版无需手动签到，定时自动领取日活奖励；Qoder 渠道无签到活动，仅 API 转发）。</p>
-      <p>2. AI 客户端配置：Base URL <code>http://127.0.0.1:7863/v1</code>，API Key 见页面顶部。</p>
+      <p>2. AI 客户端配置：Base URL 见页面顶部的地址（默认 <code>http://127.0.0.1:17863/v1</code>，
+        端口可在「设置 → 监听地址」里改），API Key 见页面顶部。</p>
       <p>3. 支持三种接口协议：<br>
         · OpenAI Chat：<code>POST /v1/chat/completions</code>（旧版客户端）<br>
         · OpenAI Responses：<code>POST /v1/responses</code>（codex CLI）<br>

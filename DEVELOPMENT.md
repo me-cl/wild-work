@@ -15,8 +15,13 @@
 ## 1. 代码地图
 
 ```
-cmd/wild-work/main.go         # daemon 入口：装配各渠道 Runtime → 启动 HTTP → 调度器 → 托盘/无头
-cmd/wild-work/web/             # 纯静态 Web UI（index.html / app.js / style.css）
+cmd/wild-work/main.go         # 桌面入口：daemon.Start + 托盘/无头模式 + 信号处理
+internal/daemon/              # 进程装配（Start/Stop/Addr/URL）：渠道 Runtime → HTTP → 调度器
+                              # 桌面与 Android（mobile/）共用这一份，只有壳不同
+internal/webui/web/           # 纯静态 Web UI（index.html / app.js / style.css），go:embed
+internal/webui/webui.go       # embed FS 出口（webui.FS()）
+mobile/mobile.go              # gomobile bind 入口（Android AAR 的 Go 侧）
+shell/android/                # Kotlin WebView 壳 + 前台服务（见 shell/android/README.md）
 cmd/genicon/                   # 图标生成（纯 Go）
 internal/
 ├── app/app.go                 # 业务编排：HTTP 管理 API + 登录流程 + 费率缓存 + 日志
@@ -50,7 +55,7 @@ internal/
    例外：`oczen` 的强制 `stream=true` 是上游闸门要求（非兼容便利），且 `tool_choice` 只允许在「客户端未带 tools」时置 `none`，否则会破坏客户端的工具调用。
 2. **日志/面板零 token**：任何输出不得含 access token / refresh token / GitHub token。
 3. **auth 文件格式**：嵌套形 `{auth:{...},account:{...}}`，`internal/auth.Parse` 与各 login.SaveAuth 写入必须一致。新增字段必须同时加入 Parse 和 SaveAtomic。
-4. **config.listen 兼容**：新对象格式 `{"host","port"}` + 旧字符串格式 `":7863"` 都要能解析。
+4. **config.listen 兼容**：新对象格式 `{"host","port"}` + 旧字符串格式 `":7863"` 都要能解析。默认端口是 `config.DefaultPort`（17863，原 7863 常被本机其他服务占用）；已写进 config.json 的端口原样沿用，**不做静默迁移**。
 5. **state.json 向后兼容**：只增不减字段，旧文件缺失字段按零值处理。
 6. **托盘回调必须 goroutine 化**：systray 消息循环线程上禁止阻塞。
 7. **`CGO_ENABLED=0`**：Windows 交叉编译必须用此标志（纯 Go 无 cgo 依赖）。
@@ -221,7 +226,7 @@ model 字段回填：`Aggregate` 直接改字段；`Stream` 用 `modelRewriter` 
 
 1. 新建 `internal/<channel>/` 包，实现 `provider.Upstream` 接口
 2. 新建 `internal/login_<channel>/` 包，实现登录编排
-3. 在 `cmd/wild-work/main.go` 装配处注册 Runtime
+3. 在 `internal/daemon/daemon.go` 装配处注册 Runtime（**不是** `cmd/wild-work/main.go`，那只是桌面壳）
 
 > **例外：无账号渠道（oczen）**不需要第 2 步，也不需要 `internal/auth` 的 `Load<X>Dir()`：
 > 虚拟账号由 `oczen.AnonymousAuth()` 在 `main` 装配时注入 pool（`FilePath` 为空），
@@ -259,7 +264,12 @@ type Upstream interface {
 | `platform.go` | 全部 | 包文档 |
 | `platform_windows.go` | Windows | MessageBoxW/注册表自启/浏览器探测 |
 | `platform_darwin.go` | macOS | osascript/LaunchAgent/Chrome 无痕 |
-| `platform_other.go` | Linux/其他 | xdg-open/简化实现 |
+| `platform_other.go` | Linux/其他（`!windows && !darwin && !android`） | xdg-open/简化实现 |
+| `platform_android.go` | Android | 无操作/日志（面板在自带 WebView 里，不需要调外部浏览器） |
+
+`internal/systray` 同样拆两份：`systray.go`（`!android`，DBus/AppKit）与
+`systray_android.go`（`android`，空实现）。**Android 也满足 `linux` 构建标签**，
+所以 `!android` 必须显式写出来，否则 DBus 实现会在手机上编译通过却运行时崩。
 
 ### 构建
 

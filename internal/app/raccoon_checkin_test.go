@@ -15,9 +15,9 @@ import (
 // （见 internal/raccoon/checkin.go 的实测记录）。这次改动横跨四处：
 //
 //	① internal/raccoon/checkin.go   渠道实现（DailyCheckinReport）
-//	② cmd/wild-work/main.go         调度器给签到时间 + 观察器
+//	② internal/daemon/daemon.go       调度器给签到时间 + 观察器
 //	③ internal/app/app.go           noExplicitCheckin 移除 Raccoon（开放手动按钮）
-//	④ cmd/wild-work/web/app.js      NO_EXPLICIT_CHECKIN 移除 "raccoon"
+//	④ internal/webui/web/app.js      NO_EXPLICIT_CHECKIN 移除 "raccoon"
 //
 // 漏任意一处都**不报错**——只表现为「按钮是灰的」或「定时不跑」（R34/R41 同族），
 // 故用静态断言锁死。
@@ -84,15 +84,15 @@ func TestRaccoonCheckinWiring(t *testing.T) {
 	}
 
 	// ④ 调度器：rcSch 必须有签到时间（不再是显式空切片）且观察器已接线。
-	mainSrc, err := os.ReadFile("../../cmd/wild-work/main.go")
+	mainSrc, err := os.ReadFile("../../internal/daemon/daemon.go")
 	if err != nil {
-		t.Fatalf("读 main.go 失败: %v", err)
+		t.Fatalf("读 daemon.go 失败: %v", err)
 	}
 	main := string(mainSrc)
 	rcRe := regexp.MustCompile(`(?s)rcSch := scheduler\.New\(scheduler\.Config\{[^}]*\}`)
 	m := rcRe.FindString(main)
 	if m == "" {
-		t.Fatal("❌ main.go 未找到 rcSch 的 scheduler.New 定义")
+		t.Fatal("❌ daemon.go 未找到 rcSch 的 scheduler.New 定义")
 	}
 	if strings.Contains(m, "CheckinMinutes: []int{}") {
 		t.Error("❌ rcSch 的 CheckinMinutes 仍为显式空切片 —— 定时签到不会运行（R39 语义：空切片 = 本渠道无此任务）")
@@ -105,7 +105,7 @@ func TestRaccoonCheckinWiring(t *testing.T) {
 		`rcSch.SetRefreshObserver(`,
 	} {
 		if !strings.Contains(main, want) {
-			t.Errorf("❌ main.go 缺少 %q —— 签到结果不进日志，面板标签与 stats 签到收入都读不到", want)
+			t.Errorf("❌ daemon.go 缺少 %q —— 签到结果不进日志，面板标签与 stats 签到收入都读不到", want)
 		}
 	}
 }
