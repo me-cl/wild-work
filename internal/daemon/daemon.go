@@ -52,6 +52,8 @@ import (
 	"wild-work/internal/qodercom"
 	"wild-work/internal/qwenwork"
 	"wild-work/internal/raccoon"
+	"wild-work/internal/sanitize"
+	"wild-work/internal/sanitizecfg"
 	"wild-work/internal/scheduler"
 	"wild-work/internal/server"
 	"wild-work/internal/stats"
@@ -177,6 +179,16 @@ func Start(opts Options) (*Daemon, error) {
 		log.Printf("config.json 不存在，使用默认配置（写盘失败：%v）", err)
 	} else if created {
 		log.Printf("config.json 不存在，使用默认配置并生成")
+	}
+	// 脱敏规则：sanitize.toml 首次运行生成完整模板；存在时把用户条目追加到内置表末尾。
+	//
+	// 必须留在装配层而不是各平台入口：桌面（cmd/wild-work）与 Android（mobile）共用
+	// 这一份装配，规则加载漏在任一路径上都表现为「用户补的规则莫名其妙不生效」。
+	// 两处 Load 都不能省——internal/sanitize 是生产调用链，internal/upstream 是
+	// 与参考实现平行的另一份（R115/R151 起两份表必须同步）。
+	if sanitizecfg.EnsureFile("sanitize.toml") {
+		sanitize.Load("sanitize.toml")
+		upstream.Load("sanitize.toml")
 	}
 	// 管理面板鉴权：监听非环回地址（0.0.0.0 / 网卡 IP）时必须设置管理员密码，
 	// 否则局域网任何设备都能无凭据打开面板、退出程序。启动层与面板保存层双重把关。

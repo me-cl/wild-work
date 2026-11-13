@@ -609,6 +609,25 @@ check("无档位声明的模型不显示档位标", (feesHtml.match(/effort-tag/
 check("费率表上游命名空间 ID 直通（cline-free/*）",
   feesHtml.includes('data-mid="cline-free/mimo-v2.6-flash"'), feesHtml.slice(0, 300));
 
+// 双模型行与奇数尾行：手机端 CSS 按 DOM 顺序将四格排成两行，
+// 故必须验证第二模型实际存在，且尾行不输出空模型/空倍率单元格。
+{
+  const panels = [...feesHtml.matchAll(/<div class="fees-panel[^>]*data-feepanel="([^"]+)">([\s\S]*?)<\/table>/g)];
+  const rowsOf = (ch) => [...((panels.find((p) => p[1] === ch)?.[2] || "").split("<tbody>")[1] || "").matchAll(/<tr>([\s\S]*?)<\/tr>/g)]
+    .map((m) => m[1]);
+  const qoderRows = rowsOf("qodercn");
+  const clineRows = rowsOf("cline");
+  check("费率表双模型行保留两组模型与倍率（手机逐行展示）",
+    qoderRows.length === 1 &&
+    ["qodercn/glm-5.3", "qodercn/qwen3.8-flash"].every((id) => qoderRows[0].includes(`data-mid="${id}"`)) &&
+    (qoderRows[0].match(/<td>/g) || []).length === 4 &&
+    qoderRows[0].includes("x0.50") && qoderRows[0].includes("x0.30"), qoderRows[0]);
+  check("费率表奇数尾行仅有真实模型两格（无空数据）",
+    clineRows.length === 1 && (clineRows[0].match(/<td>/g) || []).length === 2 &&
+    clineRows[0].includes('data-mid="cline-free/mimo-v2.6-flash"') && clineRows[0].includes("Free"), clineRows[0]);
+}
+
+
 // ---- 场景 2.75：模型查找面板无档位声明时不显示档位 ----
 T.renderModelSearch("deepseek");
 msHtml = document.getElementById("modelSearchList").innerHTML;
@@ -646,11 +665,14 @@ const FAKE_STATS = {
   //   ① today → 红；② tomorrow → 黄；③ later → 不上色。
   // 注意 ③ 的 risk 故意给 true：颜色必须跟 urgency 走，不跟 risk 走——
   // 此前用 risk 上色导致 7 天内的行全红（135h 后到期的也红，用户实测反馈）。
+  // 「花费」取净花费 today_spent，不取含作废的 today_out：
+  //   ① 健康号 today_out=30 里含 10 分到期作废 ⇒ 花费 20 · 已作废 10；
+  //   ② 远期号故意**不写** today_spent/today_expired（老后端形态）⇒ 必须退回 today_out=7。
   expiry: [
-    { uid: "4298452267967801", nickname: "健康号", group: "traework", expire_at: "2026-10-20T00:00:00+08:00", hours_left: 5.7, days_left: 0, amount: 100, today_out: 30, burn_forecast: 45, risk: true, urgency: "today" },
-    { uid: "4298452267967802", nickname: "闲置号", group: "qwenwork", expire_at: "2026-10-20T08:45:21+08:00", hours_left: 4.7, days_left: 0, amount: 100, today_out: 0, burn_forecast: -1, risk: true, urgency: "today" },
-    { uid: "4298452267967803", nickname: "明日号", group: "traework", expire_at: "2026-10-21T09:32:32+08:00", hours_left: 19.5, days_left: 1, amount: 115, today_out: 10, burn_forecast: 400, risk: false, urgency: "tomorrow" },
-    { uid: "4298452267967804", nickname: "远期号", group: "workbuddyai", expire_at: "2026-10-25T12:06:19+08:00", hours_left: 135.7, days_left: 5, amount: 249, today_out: 0, burn_forecast: -1, risk: true, urgency: "later" },
+    { uid: "4298452267967801", nickname: "健康号", group: "traework", expire_at: "2026-10-20T00:00:00+08:00", hours_left: 5.7, days_left: 0, amount: 100, today_out: 30, today_spent: 20, today_expired: 10, burn_forecast: 45, risk: true, urgency: "today" },
+    { uid: "4298452267967802", nickname: "闲置号", group: "qwenwork", expire_at: "2026-10-20T08:45:21+08:00", hours_left: 4.7, days_left: 0, amount: 100, today_out: 0, today_spent: 0, today_expired: 0, burn_forecast: -1, risk: true, urgency: "today" },
+    { uid: "4298452267967803", nickname: "明日号", group: "traework", expire_at: "2026-10-21T09:32:32+08:00", hours_left: 19.5, days_left: 1, amount: 115, today_out: 10, today_spent: 10, today_expired: 0, burn_forecast: 400, risk: false, urgency: "tomorrow" },
+    { uid: "4298452267967804", nickname: "远期号", group: "workbuddyai", expire_at: "2026-10-25T12:06:19+08:00", hours_left: 135.7, days_left: 5, amount: 249, today_out: 7, burn_forecast: -1, risk: true, urgency: "later" },
   ],
   rotation: [{
     group: "traework",
@@ -730,13 +752,21 @@ check("到期时刻渲染为完整标准时间（含时分秒，无 T、无时�
   stExpiry.includes("2026-10-20 00:00:00") &&
   !stExpiry.includes("2026-10-20T00:00:00"));
 // forecast<0（今日没消耗、无法外推）时按「全部额度作废」显示，
-// 不能出现「预计作废 -1分」这种反数。
-// forecast<0 的号（今日没消耗）必须显示「预计作废 100分」（全部额度），
-// 而不是「预计作废 -1分」这种反数。
-check("预计作废不为负（forecast<0 按全部额度）",
-  stExpiry.includes("预计作废 100分") &&
-  !/预计作废\s*-\d/.test(stExpiry));
-check("预计作废量 = 额度−外推消耗（55分）", stExpiry.includes("预计作废 55分"));
+// 必须出「到期前还会废 100分」，不能出现「到期前还会废 -1分」这种反数。
+check("到期前还会废不为负（forecast<0 按全部额度）",
+  stExpiry.includes("到期前还会废 100分") &&
+  !/到期前还会废\s*-\d/.test(stExpiry));
+check("到期前还会废量 = 额度−外推消耗（55分）", stExpiry.includes("到期前还会废 55分"));
+// 今日花费必须取净花费（today_spent=20，已扣掉 10 分作废），不能显示差值 30：
+// 这正是用户报的「都消耗完了怎么还有作废」——差值把作废算成消耗，才会自相矛盾。
+check("今日花费取净花费而非差值（花费 20，非 30）",
+  stExpiry.includes("花费 20") && !stExpiry.includes("花费 30"));
+// 「今日已废」与「到期前还会废」是两个不同的包，文案必须带批次限定词，
+// 否则并排显示会被读成「废了两次」（实测用户观感）。
+check("今日作废额带批次限定词（今日已废 10）", stExpiry.includes("今日已废 10"));
+// 无 today_spent/today_expired 的老后端载荷必须退回 today_out，不能渲染空白或 NaN。
+check("老后端无 today_spent 时退回差值（花费 7）",
+  stExpiry.includes("花费 7") && !stExpiry.includes("NaN"));
 
 const stModels = document.getElementById("stModels").innerHTML;
 check("Trae 系模型积分为估算（≈ 前缀）", stModels.includes("≈12.50"));
@@ -804,11 +834,10 @@ check("模型费率区块骨架存在（feesBox/btnRefreshFees）", /id="feesBox
 check("模型费率区块在 section 内（不再是独立 section）", /<div class="mtab-body hidden" id="mtabFees">[\s\S]*?<\/section>/.test(html) && !/<!-- 模型列表和费率 -->\s*<section class="panel">/.test(html));
 const css = readFileSync(new URL("../internal/webui/web/style.css", import.meta.url), "utf8");
 check("style.css 含运行统计样式段（#mtabStats .st-plat-row 等）", /#mtabStats \.st-token/.test(css) && /#mtabStats \.st-plat-row/.test(css));
-// ---- Token 多天行单行：不许回退成 wrap（wrap 会在内容长度临界时抖动换行）----
-check("Token 多天行 st-token 单行不折行（nowrap，极窄整条截尾）",
+// 桌面保持单行；手机端允许换行，让每个 Token 数字都可见。
+check("Token 多天行桌面单行、手机折行完整显示",
   /#mtabStats \.st-token \{[^}]*flex-wrap: nowrap/.test(css) &&
-  /#mtabStats \.st-token \{[^}]*overflow: hidden/.test(css) &&
-  !/#mtabStats \.st-token \{[^}]*flex-wrap: wrap/.test(css));
+  /@media \(max-width: 640px\) \{[\s\S]*?#mtabStats \.st-token \{[^}]*flex-wrap: wrap; overflow: visible;/.test(css));
 // 合计行配色：资产紫/琥珀，锁住防漂移
 // 平台表动态列宽：JS 实测经 --plat-cols 应用（固定 px 遇大额数字会截断）
 check("表格剩余宽度由平台列吸收（minmax(实测,1fr)），末列既不吸收也不压缩",
@@ -827,10 +856,6 @@ check("合计行当前积分=资产紫、Token=琥珀（与汇总条同色系）
 check("今日作废列配色为 danger（与今日消耗的 warn 区分）",
   /#mtabStats \.st-plat-expd \{ color: var\(--danger\)/.test(css) &&
   !/#mtabStats \.st-plat-out[^\n]*\.st-plat-expd/.test(css));
-check("Token 多天行 st-token 单行不折行（nowrap，极窄整条截尾）",
-  /#mtabStats \.st-token \{[^}]*flex-wrap: nowrap/.test(css) &&
-  /#mtabStats \.st-token \{[^}]*overflow: hidden/.test(css) &&
-  !/#mtabStats \.st-token \{[^}]*flex-wrap: wrap/.test(css));
 check("更新角标失败警示样式存在（#stUpdated.st-stale）", /#stUpdated\.st-stale/.test(css));
 // ---- 用量 tab 五卡同行（5 列 grid，不换行）----
 check("用量卡片 5 列同行（.usage-cards repeat(5)）", /\.usage-cards \{[^}]*grid-template-columns: repeat\(5, 1fr\)/.test(css));
@@ -1120,7 +1145,9 @@ for (const [label, re] of uniq) {
       /地区限制/.test(html) && /备用上游通道/.test(html)],
     ["顶栏 1fr 下界解除（minmax(0,1fr)）", /\.top-info \{[^}]*grid-template-columns: minmax\(0, 1fr\)/.test(css)],
     ["账号卡片允许收缩（minmax(0,1fr)）", /\.acct-grid \{ grid-template-columns: minmax\(0, 1fr\); \}/.test(css)],
-    ["费率表窄屏隐藏第 3/4 列（4 列布局手机必溢出）", /\.fees table th:nth-child\(n\+3\)[\s\S]*?display: none/.test(css)],
+    ["费率表窄屏四格重排为模型/倍率两列（不隐藏第二模型）",
+      /@media \(max-width: 719px\) \{[\s\S]*?\.fees tbody tr \{\s*display: grid;\s*grid-template-columns: minmax\(0, 1fr\) auto;/.test(css) &&
+      !/\.fees (?:table )?(?:th|td):nth-child\(n\+3\)/.test(css)],
     ["运行统计宽表给横向滚动容器", /#mtabStats \.st-plat,\s*\n\s*#mtabStats \.st-ex-scroll,\s*\n\s*#mtabStats \.st-ab-scroll,\s*\n\s*#mtabStats \.st-scroll \{ max-width: 100%; overflow-x: auto; \}/.test(css)],
     ["触控目标仅在粗指针设备放大（桌面鼠标不吃）", /@media \(hover: none\) and \(pointer: coarse\)/.test(css)],
   ];
