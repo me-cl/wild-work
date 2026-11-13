@@ -11,6 +11,7 @@ go 1.26.0
 require wild-work v0.0.0
 
 require (
+	github.com/BurntSushi/toml v1.6.0 // indirect
 	github.com/andybalholm/brotli v1.0.6 // indirect
 	github.com/energye/systray v1.0.3 // indirect
 	github.com/godbus/dbus/v5 v5.1.0 // indirect
