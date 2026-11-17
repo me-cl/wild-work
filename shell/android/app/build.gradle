@@ -13,8 +13,8 @@ android {
         // 且这是 Go 官方支持的最低 Android 版本量级。往下调没有收益。
         minSdk 26
         targetSdk 35
-        versionCode 1
-        versionName "2.11.4"
+        versionCode 3
+        versionName "2.12.0"
 
         ndk {
             // gomobile bind 只产出这两种 ABI（见 build-aar.sh）。
