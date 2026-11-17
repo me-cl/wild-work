@@ -87,8 +87,84 @@ PY
   fi
 }
 
+# APK 里的版本号：直接数 libgojni.so 里的字节，不依赖 aapt2。
+# 理由与 verify_version_in_binary 相同（Go 二进制里的长串只能用字节计数），
+# 而且要证明的正是「Go 侧代码真的进了包」——aapt2 读的 versionName 只反映 Gradle，
+# 两者都查才堵得住「Gradle 改了、AAR 忘重建」这种漂移。
+verify_apk_version() {
+  local apk="$1" ver="$2" py=""
+  if [ ! -f "$apk" ]; then
+    warn "产物不存在，跳过版本核对：$apk"
+    return 0
+  fi
+  if command -v python >/dev/null 2>&1; then
+    py="python"
+  elif command -v python3 >/dev/null 2>&1; then
+    py="python3"
+  fi
+  if [ -z "$py" ]; then
+    warn "未找到 python，跳过 APK 版本核对"
+    return 0
+  fi
+  if ! "$py" - "$apk" "$ver" <<'PY'
+import sys, zipfile
+
+apk, ver = sys.argv[1], sys.argv[2]
+z = zipfile.ZipFile(apk)
+seen = 0
+bad = []
+for i in z.infolist():
+    if not i.filename.endswith("libgojni.so"):
+        continue
+    seen += 1
+    n = z.read(i.filename).count(ver.encode())
+    print(f"    $ {i.filename} 中含 {ver} 共 {n} 次")
+    if n < 1:
+        bad.append(i.filename)
+sys.exit(0 if seen and not bad else 1)
+PY
+  then
+    warn "APK 的原生库中未找到版本号 $ver（AAR 可能没重建）"
+    return 1
+  fi
+}
+
+# APK 体积体检：Gradle **增量**构建偶发产出「带零填充空洞」的包——对齐、签名、
+# 版本号、.so 内容全部正常，只有体积异常（2026-11-17 实测 35.0MB -> 51.0MB，
+# 多出的 16MB 是 lib/armeabi-v7a/libgojni.so 本地头之前一段全零，Gradle 只跑了
+# 3 个 up-to-date 任务）。这种包能装能跑，只靠肉眼看大小才发现得了，故做成断言。
+#
+# 判据取 zip 的「未占用字节」= 中央目录起点 − 各条目本地头+数据之和：
+# 正常包只有 zipalign 的页对齐填充（实测 27KB 级），异常包是兆级。
+verify_apk_slack() {
+  local apk="$1" limit="${APK_MAX_SLACK:-1048576}" py=""
+  if command -v python >/dev/null 2>&1; then
+    py="python"
+  elif command -v python3 >/dev/null 2>&1; then
+    py="python3"
+  fi
+  if [ -z "$py" ]; then
+    warn "未找到 python，跳过 APK 体积体检"
+    return 0
+  fi
+  "$py" - "$apk" "$limit" <<'PY'
+import sys, zipfile
+
+apk, limit = sys.argv[1], int(sys.argv[2])
+z = zipfile.ZipFile(apk)
+# 30 = 本地文件头的固定长度；文件名与 extra 的长度两边一致，够用。
+occupied = sum(30 + len(i.filename.encode()) + len(i.extra) + i.compress_size
+               for i in z.infolist())
+slack = z.start_dir - occupied
+print(f"    $ 未占用字节 {slack}（上限 {limit}）")
+sys.exit(0 if slack <= limit else 1)
+PY
+}
+
 # ------------------------------------------------------------------ check
 cmd_check() {
+  log "版本号一致性（Go 常量 vs Gradle）"
+  cmd_version
   log "go build ./..."
   go build ./...
   log "go vet ./..."
@@ -273,6 +349,16 @@ cmd_android() {
   mkdir -p dist
   cp "$apk" "dist/wild-work-android-$kind.apk"
   log "产物：dist/wild-work-android-$kind.apk（$(wc -c < "dist/wild-work-android-$kind.apk") B）"
+
+  # 体积体检不过 ⇒ 这是增量构建残留的零填充包，重跑一次 clean 就行。
+  # 不自动 clean：clean 掉的中间产物会让下一次构建从零开始（gomobile bind 是分钟级），
+  # 而绝大多数构建本来是干净的——由人决定值不值得付这个代价。
+  if ! verify_apk_slack "dist/wild-work-android-$kind.apk"; then
+    warn "APK 里有异常大的零填充（增量构建残留），请重跑："
+    warn "  ( cd shell/android && \"\$GRADLE\" clean ) && build/package.sh android $kind"
+    return 1
+  fi
+  verify_apk_version "dist/wild-work-android-$kind.apk" "$(project_version)"
 }
 
 # ------------------------------------------------------------------ dispatch

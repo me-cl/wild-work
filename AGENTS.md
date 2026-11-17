@@ -418,10 +418,13 @@ WPS 灵犀（`lingxi/*`，扫码/`wps_sid` 粘贴 + CDP 捕获，与 comate 共�
 > 标准流程：`go build ./... && go vet ./... && go test ./...` 全绿后再构建。
 >
 > **统一入口 `build/package.sh`**（全部细节见 [`docs/打包发版备忘.md`](docs/打包发版备忘.md)）：
-> `check`（build/vet/test + 前端静态检查，**CI 不做这些**）、`version`（核对 Go 与 Gradle
+> `check`（版本号一致性 + build/vet/test + 前端静态检查，**CI 不做这些**）、`version`（核对 Go 与 Gradle
 > 两处版本号）、`bump X.Y.Z`（同步改 Go 常量 + Gradle `versionName`/`versionCode`）、
 > `windows` / `linux` / `macos` / `android` / `desktop` / `all`。脚本不写 `RELEASES.md`
 > 段落、不 commit/tag——那两步是显式动作。
+> `android` 出包后会断言两件事：包内零填充不得超 1MiB（`verify_apk_slack`，抓 Gradle
+> 增量构建的 51MB 事故）与每个 `lib/*/libgojni.so` 里都有 Go 侧版本号（`verify_apk_version`，
+> 抓 AAR 忘重建）。`aapt2` 的 `versionName` 只反映 Gradle，证明不了包里跑的是哪版代码。
 
 ```bash
 # Windows（本机直接构建，或 WSL 交叉编译）
